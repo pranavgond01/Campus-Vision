@@ -36,12 +36,13 @@ It seamlessly bridges **physical college ID cards** with **live CCTV/webcam stre
 * **Cross-Domain Recognition Optimization**: Passport/ID card printed photos and live webcam video have vastly different lighting, camera sensors, and angles. With our calibrated cosine threshold (`FACE_MATCH_THRESHOLD = 0.310`), the system accurately verifies identity across domains.
 * **Multi-Sample Enrollment (`+ Snap Webcam`)**: Enroll an individual with their ID card photo, and easily add an instant live webcam snapshot to achieve near 100% recognition accuracy under diverse real-world lighting conditions.
 
-### 🎥 3. Real-Time CCTV & Webcam Recognition
-* **Live Video Streams**: Supports integrated webcams, external USB cameras, and network RTSP IP cameras.
+### 🎥 3. Real-Time CCTV & Webcam Recognition (Multi-Camera Switcher)
+* **Single RTSP Stream URI Configuration**: College NVRs (Hikvision, CP Plus, Dahua, Matrix, etc.) share a single base IP and credentials. Configure the RTSP URI once with channel template (e.g. `rtsp://admin:pass@192.168.1.100:554/Streaming/Channels/{ch}02`).
+* **Instant 1-by-1 Camera Switcher**: Seamlessly switch between campus cameras (`CAM 01: Main Gate`, `CAM 02: Library`, `CAM 03: CS Dept`, `CAM 04: Canteen`, etc.) with single-click buttons or `< Prev` / `Next >` navigation.
 * **Bounding Box Overlays**: Real-time visual feedback:
   * 🟢 **Green Bounding Box**: Verified enrolled student/faculty member with name and confidence percentage.
   * 🔴 **Red Bounding Box**: Unknown visitor or unregistered face.
-* **Live Detection Cards**: Displays recent matches with cropped live face thumbnails, identity details, and exact timestamps.
+* **Location-Aware Audit Logs**: Every recognition event is automatically tagged and stored with the specific camera name and location where the face was spotted.
 
 ### ⏱️ 4. Intelligent Anti-Spam Recognition Cooldown
 * **No More Duplicate Log Flooding**: When a person stands in front of the camera or glances around, standard systems record dozens of duplicate entries.

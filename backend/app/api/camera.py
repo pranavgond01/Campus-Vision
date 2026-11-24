@@ -10,6 +10,7 @@ import numpy as np
 
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 
 from app.core.config import (
     DEFAULT_CAMERA_ID,
@@ -60,6 +61,18 @@ _camera_error: Optional[str] = None
 
 _camera_started_at: Optional[float] = None
 
+_current_source: str = "0"
+
+_current_camera_id: str = DEFAULT_CAMERA_ID
+
+_current_camera_name: str = "Local Webcam"
+
+
+class CameraConnectRequest(BaseModel):
+    source: Optional[str] = "0"
+    camera_id: Optional[str] = DEFAULT_CAMERA_ID
+    camera_name: Optional[str] = "Local Webcam"
+
 
 # ============================================================
 # RECOGNITION STATE
@@ -82,28 +95,63 @@ _last_event_logged: dict[str, float] = {}
 # CAMERA ACCESS
 # ============================================================
 
-def get_camera() -> Optional[cv2.VideoCapture]:
+def get_camera(source: str = "0") -> Optional[cv2.VideoCapture]:
 
     global _camera
+    global _current_source
 
     with _camera_lock:
 
-        if _camera is not None and _camera.isOpened():
+        source_str = str(source).strip() if source is not None else "0"
+        if not source_str:
+            source_str = "0"
+
+        if _camera is not None and _camera.isOpened() and str(_current_source) == source_str:
             return _camera
 
-        try:
-            cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
-            if cap.isOpened():
-                cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
-                cap.set(cv2.CAP_PROP_FPS, 30)
-                ret, test_frame = cap.read()
-                if ret and test_frame is not None:
-                    _camera = cap
-                    return _camera
-                cap.release()
-        except Exception:
-            pass
+        if _camera is not None:
+            try:
+                _camera.release()
+            except Exception:
+                pass
+            _camera = None
+
+        # Check if source is a numeric webcam index (e.g. 0, 1)
+        if source_str.isdigit() or (source_str.startswith("-") and source_str[1:].isdigit()):
+            src_idx = int(source_str)
+            try:
+                cap = cv2.VideoCapture(src_idx, cv2.CAP_DSHOW)
+                if not cap.isOpened():
+                    cap = cv2.VideoCapture(src_idx)
+                if cap.isOpened():
+                    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+                    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+                    cap.set(cv2.CAP_PROP_FPS, 30)
+                    ret, test_frame = cap.read()
+                    if ret and test_frame is not None:
+                        _camera = cap
+                        _current_source = source_str
+                        return _camera
+                    cap.release()
+            except Exception as exc:
+                print(f"[CAMERA] Webcam open error: {exc}")
+        else:
+            # RTSP, HTTP, or video file stream URI
+            try:
+                cap = cv2.VideoCapture(source_str, cv2.CAP_FFMPEG)
+                if not cap.isOpened():
+                    cap = cv2.VideoCapture(source_str)
+                if cap.isOpened():
+                    # Set buffer size to 1 to eliminate frame lag on RTSP
+                    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                    ret, test_frame = cap.read()
+                    if ret and test_frame is not None:
+                        _camera = cap
+                        _current_source = source_str
+                        return _camera
+                    cap.release()
+            except Exception as exc:
+                print(f"[CAMERA] RTSP open error: {exc}")
 
         return None
 
@@ -112,23 +160,38 @@ def get_camera() -> Optional[cv2.VideoCapture]:
 # START CAMERA
 # ============================================================
 
-def start_camera() -> bool:
+def start_camera(
+    source: str = "0",
+    camera_id: str = DEFAULT_CAMERA_ID,
+    camera_name: str = "Local Webcam",
+) -> bool:
 
     global _camera_running
     global _camera_error
     global _camera_started_at
     global _is_simulated
+    global _current_source
+    global _current_camera_id
+    global _current_camera_name
 
     with _camera_lock:
 
-        if _camera_running:
-            return True
+        source_str = str(source).strip() if source is not None else "0"
+        if not source_str:
+            source_str = "0"
 
-        camera = get_camera()
+        # If already running with a different source, switch
+        if _camera_running and str(_current_source) != source_str:
+            stop_camera()
+
+        _current_camera_id = camera_id or DEFAULT_CAMERA_ID
+        _current_camera_name = camera_name or camera_id or "Camera"
+
+        camera = get_camera(source_str)
 
         if camera is None:
             _is_simulated = True
-            _camera_error = None
+            _camera_error = f"Stream offline at '{source_str}'. Running in simulated preview."
         else:
             _is_simulated = False
             _camera_error = None
@@ -152,19 +215,18 @@ def stop_camera() -> None:
     global _camera_started_at
     global _is_simulated
 
+    _camera_running = False
+    _is_simulated = False
+    _camera_started_at = None
+
+    time.sleep(0.06)
+
     with _camera_lock:
-
-        _camera_running = False
-        _is_simulated = False
-        _camera_started_at = None
-
         if _camera is not None:
-
             try:
                 _camera.release()
             except Exception:
                 pass
-
             _camera = None
 
 
@@ -446,7 +508,7 @@ def process_frame(
                 try:
                     event = RecognitionEvent(
                         person_id=person.id if (matched and person) else None,
-                        camera_id=DEFAULT_CAMERA_ID,
+                        camera_id=_current_camera_id,
                         confidence=round(confidence, 4),
                         status=status,
                     )
@@ -464,8 +526,14 @@ def process_frame(
                     "enrollment_no": enrollment_no if (matched and person) else None,
                     "year": person.year if (matched and person) else None,
                     "branch": person.branch if (matched and person) else None,
+                    "date_of_birth": getattr(person, "date_of_birth", None) if (matched and person) else None,
+                    "contact_number": getattr(person, "contact_number", None) if (matched and person) else None,
+                    "validity": getattr(person, "validity", None) if (matched and person) else None,
+                    "face_image": getattr(person, "face_image", None) if (matched and person) else None,
                     "confidence": round(confidence, 4),
                     "status": "MATCHED" if matched else "UNKNOWN",
+                    "camera_id": _current_camera_id,
+                    "camera_name": _current_camera_name,
                     "x": x,
                     "y": y,
                     "width": width,
@@ -744,33 +812,60 @@ def camera_status():
 
     return {
         "success": True,
-
-        "camera_id": (
-            DEFAULT_CAMERA_ID
-        ),
-
-        "running": (
-            _camera_running
-        ),
-
+        "camera_id": _current_camera_id,
+        "camera_name": _current_camera_name,
+        "source": _current_source,
+        "running": _camera_running,
         "available": True,
-
         "is_simulated": _is_simulated,
-
-        "processing": (
-            _processing_running
-        ),
-
+        "processing": _processing_running,
         "detections": detections,
-
         "error": _camera_error,
-
         "started_at": (
             _camera_started_at
             if _camera_running
             else None
         ),
     }
+
+
+# ============================================================
+# PRESETS
+# ============================================================
+
+@router.get("/presets")
+def camera_presets():
+
+    return [
+        {
+            "id": "LOCAL-WEBCAM-01",
+            "name": "Laptop / PC Webcam (0)",
+            "source": "0",
+            "location": "Local Machine",
+            "type": "webcam",
+        },
+        {
+            "id": "CAM-MAIN-GATE",
+            "name": "Campus Main Entrance Gate",
+            "source": "rtsp://admin:college123@192.168.1.101:554/Streaming/Channels/102",
+            "location": "Main Entrance Gate",
+            "type": "cctv",
+        },
+        {
+            "id": "CAM-LIBRARY",
+            "name": "Central Library Entry",
+            "source": "rtsp://admin:college123@192.168.1.102:554/Streaming/Channels/102",
+            "location": "Library Corridor",
+            "type": "cctv",
+        },
+        {
+            "id": "CAM-CS-DEPT",
+            "name": "Computer Science Dept Entry",
+            "source": "rtsp://admin:college123@192.168.1.103:554/Streaming/Channels/102",
+            "location": "CS Dept Block 2",
+            "type": "cctv",
+        },
+    ]
 
 
 # ============================================================
@@ -800,19 +895,13 @@ def camera_detections():
 
     return {
         "success": True,
-
-        "camera_id": (
-            DEFAULT_CAMERA_ID
-        ),
-
-        "running": (
-            _camera_running
-        ),
-
+        "camera_id": _current_camera_id,
+        "camera_name": _current_camera_name,
+        "source": _current_source,
+        "running": _camera_running,
         "count": len(
             detections
         ),
-
         "detections": detections,
     }
 
@@ -822,21 +911,23 @@ def camera_detections():
 # ============================================================
 
 @router.post("/start")
-def start_camera_endpoint():
+def start_camera_endpoint(req: Optional[CameraConnectRequest] = None):
 
-    started = start_camera()
+    source = req.source if (req and req.source is not None and req.source.strip()) else _current_source
+    camera_id = req.camera_id if (req and req.camera_id is not None and req.camera_id.strip()) else _current_camera_id
+    camera_name = req.camera_name if (req and req.camera_name is not None and req.camera_name.strip()) else _current_camera_name
+
+    started = start_camera(source=source, camera_id=camera_id, camera_name=camera_name)
 
     if not started:
 
         return {
             "success": False,
-
-            "camera_id": (
-                DEFAULT_CAMERA_ID
-            ),
-
+            "camera_id": _current_camera_id,
+            "camera_name": _current_camera_name,
+            "source": _current_source,
             "running": False,
-
+            "is_simulated": _is_simulated,
             "message": (
                 _camera_error
                 or "Could not start camera."
@@ -845,17 +936,12 @@ def start_camera_endpoint():
 
     return {
         "success": True,
-
-        "camera_id": (
-            DEFAULT_CAMERA_ID
-        ),
-
+        "camera_id": _current_camera_id,
+        "camera_name": _current_camera_name,
+        "source": _current_source,
         "running": True,
-
-        "message": (
-            "Smart Campus Vision camera "
-            "started."
-        ),
+        "is_simulated": _is_simulated,
+        "message": f"Connected to {_current_camera_name} ({_current_source})",
     }
 
 

@@ -42,9 +42,15 @@ export interface RecognitionResult {
 }
 
 export interface CameraStatus {
+  success?: boolean;
   running: boolean;
   camera_id: string;
-  camera: {
+  camera_name?: string;
+  source?: string;
+  is_simulated?: boolean;
+  error?: string | null;
+  detections?: number;
+  camera?: {
     running: boolean;
     source: string;
     width: number;
@@ -52,6 +58,14 @@ export interface CameraStatus {
     fps: number;
     last_error: string | null;
   };
+}
+
+export interface CameraPreset {
+  id: string;
+  name: string;
+  source: string;
+  location: string;
+  type: string;
 }
 
 async function request<T>(
@@ -203,13 +217,19 @@ export async function getCameraStatus() {
   );
 }
 
-export async function startCamera() {
-  return request(
-    "/api/camera/start",
-    {
-      method: "POST",
-    },
-  );
+export async function startCamera(params?: {
+  source?: string;
+  camera_id?: string;
+  camera_name?: string;
+}) {
+  return request("/api/camera/start", {
+    method: "POST",
+    body: JSON.stringify(params || {}),
+  });
+}
+
+export async function getCameraPresets(): Promise<CameraPreset[]> {
+  return request<CameraPreset[]>("/api/camera/presets");
 }
 
 export async function stopCamera() {

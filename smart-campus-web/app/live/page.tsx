@@ -11,15 +11,23 @@ import Link from "next/link";
 
 import {
   Camera,
+  ChevronLeft,
+  ChevronRight,
   CircleStop,
   Eye,
   Laptop,
   Play,
+  Plus,
+  Radio,
   Server,
+  Settings,
+  Trash2,
   UserCheck,
   UserPlus,
   UserX,
+  Video,
   Wifi,
+  X,
 } from "lucide-react";
 
 import {
@@ -34,6 +42,48 @@ import {
   stopCamera,
 } from "@/lib/api";
 import PersonDetailsModal, { PersonModalData } from "@/components/PersonDetailsModal";
+
+export interface CameraChannel {
+  channel: number;
+  name: string;
+  location: string;
+}
+
+export function getStreamUrlForChannel(uri: string, channel: number): string {
+  const trimmed = (uri || "").trim();
+  if (!trimmed || trimmed === "0" || trimmed === "1") {
+    return trimmed || "0";
+  }
+  if (trimmed.includes("{ch}")) {
+    return trimmed.replace(/\{ch\}/g, String(channel));
+  }
+  if (trimmed.includes("{channel}")) {
+    return trimmed.replace(/\{channel\}/g, String(channel));
+  }
+  if (/\/Channels\/\d+/i.test(trimmed)) {
+    return trimmed.replace(/\/Channels\/\d+/i, `/Channels/${channel}02`);
+  }
+  if (/channel=\d+/i.test(trimmed)) {
+    return trimmed.replace(/channel=\d+/i, `channel=${channel}`);
+  }
+  if (/\/ch\d+\//i.test(trimmed)) {
+    return trimmed.replace(/\/ch\d+\//i, `/ch${channel}/`);
+  }
+  return trimmed;
+}
+
+const DEFAULT_CHANNELS: CameraChannel[] = [
+  { channel: 1, name: "Main Entrance Gate", location: "Campus Gate 1" },
+  { channel: 2, name: "Central Library", location: "Library 1st Floor" },
+  { channel: 3, name: "Computer Science Dept", location: "CS Block 2nd Floor" },
+  { channel: 4, name: "Canteen & Cafeteria", location: "Student Center" },
+  { channel: 5, name: "Main Academic Corridor", location: "Admin Building" },
+  { channel: 6, name: "Campus Parking Area", location: "East Parking" },
+  { channel: 7, name: "Auditorium / Seminar Hall", location: "Block C" },
+  { channel: 8, name: "Sports Complex & Ground", location: "Ground Area" },
+];
+
+const DEFAULT_RTSP_URI = "rtsp://admin:college123@192.168.1.100:554/Streaming/Channels/{ch}02";
 
 export default function LivePage() {
   // Mode: "browser" (Device webcam) or "backend" (OpenCV CCTV)
@@ -68,6 +118,26 @@ export default function LivePage() {
   const [backendResults, setBackendResults] = useState<RecognitionResult[]>([]);
   const [backendLoading, setBackendLoading] = useState(false);
   const [backendError, setBackendError] = useState("");
+
+  // Single RTSP Stream URI & Multi-Channel Switcher
+  const [rtspUri, setRtspUri] = useState<string>(DEFAULT_RTSP_URI);
+  const [channels, setChannels] = useState<CameraChannel[]>(DEFAULT_CHANNELS);
+  const [activeChannel, setActiveChannel] = useState<number>(1);
+  const [streamKey, setStreamKey] = useState<number>(Date.now());
+  const [showSettingsModal, setShowSettingsModal] = useState<boolean>(false);
+  const [tempRtspUri, setTempRtspUri] = useState<string>(DEFAULT_RTSP_URI);
+
+  useEffect(() => {
+    try {
+      const savedUri = localStorage.getItem("smart_campus_rtsp_uri");
+      if (savedUri && savedUri.trim()) {
+        setRtspUri(savedUri.trim());
+        setTempRtspUri(savedUri.trim());
+      }
+    } catch {}
+  }, []);
+
+  const activeChannelObj = channels.find((c) => c.channel === activeChannel) || channels[0];
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -283,16 +353,47 @@ export default function LivePage() {
     }
   }, [mode, refreshBackend]);
 
-  async function handleBackendStart() {
+  const handleSwitchChannel = async (channelNum: number) => {
     try {
       setBackendLoading(true);
-      await startCamera();
+      setBackendError("");
+      setActiveChannel(channelNum);
+      const chObj = channels.find((c) => c.channel === channelNum) || {
+        channel: channelNum,
+        name: `Camera ${channelNum}`,
+        location: `Channel ${channelNum}`,
+      };
+      const resolvedUrl = getStreamUrlForChannel(rtspUri, channelNum);
+
+      await startCamera({
+        source: resolvedUrl,
+        camera_id: `CAM-${String(channelNum).padStart(2, "0")}`,
+        camera_name: chObj.name,
+      });
+
+      setStreamKey(Date.now());
       await refreshBackend();
     } catch (err) {
-      setBackendError(err instanceof Error ? err.message : "Could not start camera.");
+      setBackendError(err instanceof Error ? err.message : "Failed to switch camera.");
     } finally {
       setBackendLoading(false);
     }
+  };
+
+  const handleNextCamera = () => {
+    const currentIndex = channels.findIndex((c) => c.channel === activeChannel);
+    const nextIndex = (currentIndex + 1) % channels.length;
+    handleSwitchChannel(channels[nextIndex].channel);
+  };
+
+  const handlePrevCamera = () => {
+    const currentIndex = channels.findIndex((c) => c.channel === activeChannel);
+    const prevIndex = (currentIndex - 1 + channels.length) % channels.length;
+    handleSwitchChannel(channels[prevIndex].channel);
+  };
+
+  async function handleBackendStart() {
+    await handleSwitchChannel(activeChannel);
   }
 
   async function handleBackendStop() {
@@ -306,6 +407,17 @@ export default function LivePage() {
       setBackendLoading(false);
     }
   }
+
+  const handleSaveRtspSettings = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const cleanUri = tempRtspUri.trim() || DEFAULT_RTSP_URI;
+    setRtspUri(cleanUri);
+    try {
+      localStorage.setItem("smart_campus_rtsp_uri", cleanUri);
+    } catch {}
+    setShowSettingsModal(false);
+    await handleSwitchChannel(activeChannel);
+  };
 
   return (
     <div className="mx-auto max-w-[1500px]">
@@ -360,6 +472,90 @@ export default function LivePage() {
       <div className="grid gap-6 xl:grid-cols-[1.65fr_0.95fr]">
         {/* Left Column: Live Video */}
         <div className="flex flex-col overflow-hidden rounded-2xl border border-white/[0.07] bg-[#0d111b]">
+          {/* Multi-CCTV Camera Switcher Bar */}
+          {mode === "backend" && (
+            <div className="border-b border-white/[0.08] bg-[#0c101a] p-3.5">
+              <div className="mb-2.5 flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <Video size={16} className="text-[#6d5dfc]" />
+                  <span className="text-xs font-bold uppercase tracking-wider text-white">
+                    College CCTV Switcher ({channels.length} Cameras)
+                  </span>
+                  <span className="rounded-md bg-[#6d5dfc]/15 px-2 py-0.5 text-[11px] font-semibold text-[#a594fd]">
+                    Active: CAM {String(activeChannel).padStart(2, "0")} ({activeChannelObj.name})
+                  </span>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={handlePrevCamera}
+                    disabled={backendLoading}
+                    className="flex items-center gap-1 rounded-lg border border-white/[0.1] bg-white/[0.03] px-2.5 py-1 text-xs font-medium text-[#8b93a7] hover:bg-white/[0.08] hover:text-white transition"
+                    title="Previous Camera"
+                  >
+                    <ChevronLeft size={14} />
+                    <span>Prev</span>
+                  </button>
+
+                  <button
+                    onClick={handleNextCamera}
+                    disabled={backendLoading}
+                    className="flex items-center gap-1 rounded-lg border border-white/[0.1] bg-white/[0.03] px-2.5 py-1 text-xs font-medium text-[#8b93a7] hover:bg-white/[0.08] hover:text-white transition"
+                    title="Next Camera"
+                  >
+                    <span>Next</span>
+                    <ChevronRight size={14} />
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      setTempRtspUri(rtspUri);
+                      setShowSettingsModal(true);
+                    }}
+                    className="flex items-center gap-1.5 rounded-lg bg-white/[0.08] px-3 py-1 text-xs font-semibold text-white hover:bg-white/[0.15] transition"
+                  >
+                    <Settings size={13} />
+                    <span>RTSP Stream URI</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Numbered Camera Channel Buttons (1 by 1) */}
+              <div className="flex flex-wrap items-center gap-2">
+                {channels.map((ch) => {
+                  const isCurrent = activeChannel === ch.channel;
+                  const isLive = isCurrent && backendStatus?.running;
+                  return (
+                    <button
+                      key={ch.channel}
+                      onClick={() => handleSwitchChannel(ch.channel)}
+                      disabled={backendLoading}
+                      className={`flex items-center gap-2 rounded-xl border px-3 py-2 text-xs transition ${
+                        isCurrent
+                          ? "border-[#6d5dfc] bg-[#6d5dfc]/20 text-white shadow-sm shadow-[#6d5dfc]/30 font-semibold"
+                          : "border-white/[0.08] bg-[#121724] text-[#8b93a7] hover:border-white/20 hover:text-white"
+                      }`}
+                    >
+                      <span
+                        className={`h-2 w-2 rounded-full ${
+                          isLive
+                            ? "bg-[#22c55e] animate-pulse"
+                            : isCurrent
+                            ? "bg-[#f59e0b]"
+                            : "bg-[#4a5568]"
+                        }`}
+                      />
+                      <span className="font-mono text-[11px] font-bold text-[#6d5dfc]">
+                        CAM {String(ch.channel).padStart(2, "0")}
+                      </span>
+                      <span>{ch.name}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
           {/* Stream Bar */}
           <div className="flex items-center justify-between border-b border-white/[0.07] px-5 py-3.5">
             <div className="flex items-center gap-3">
@@ -372,7 +568,9 @@ export default function LivePage() {
                 }`}
               />
               <span className="text-sm font-semibold text-white">
-                {mode === "browser" ? "Device Webcam (Live AI)" : "Backend Stream (LOCAL-CAMERA-01)"}
+                {mode === "browser"
+                  ? "Device Webcam (Live AI)"
+                  : `CAM ${String(activeChannel).padStart(2, "0")}: ${activeChannelObj.name}`}
               </span>
             </div>
 
@@ -486,7 +684,8 @@ export default function LivePage() {
               <>
                 {backendStatus?.running ? (
                   <img
-                    src={`${API_URL}/api/camera/stream`}
+                    key={streamKey}
+                    src={`${API_URL}/api/camera/stream?t=${streamKey}`}
                     alt="Backend Live Feed"
                     className="h-full w-full object-contain"
                   />
@@ -494,7 +693,7 @@ export default function LivePage() {
                   <div className="absolute inset-0 flex flex-col items-center justify-center p-6 text-center">
                     <Wifi size={44} className="mb-3 text-[#3d4558]" />
                     <div className="text-sm font-medium text-[#8b93a7]">
-                      {backendError || "Backend camera is offline"}
+                      {backendError || `CAM ${String(activeChannel).padStart(2, "0")} (${activeChannelObj.name}) is offline or stream not started`}
                     </div>
                     <button
                       onClick={handleBackendStart}
@@ -502,7 +701,7 @@ export default function LivePage() {
                       className="mt-4 flex items-center gap-2 rounded-xl bg-[#6d5dfc] px-4 py-2.5 text-xs font-semibold text-white shadow-lg shadow-[#6d5dfc]/25"
                     >
                       <Play size={15} />
-                      <span>Start Backend Stream</span>
+                      <span>Start CAM {String(activeChannel).padStart(2, "0")} Feed</span>
                     </button>
                   </div>
                 )}
@@ -520,7 +719,7 @@ export default function LivePage() {
                       : "UNKNOWN FACE"
                     : "SCANNING FOR FACES"
                   : backendStatus?.running
-                    ? "STREAM ACTIVE"
+                    ? `LIVE: CAM ${String(activeChannel).padStart(2, "0")} - ${activeChannelObj.name} ${backendStatus.is_simulated ? "(SIMULATED)" : ""}`
                     : "DISCONNECTED"}
               </span>
             </div>
@@ -800,6 +999,118 @@ export default function LivePage() {
         person={selectedModalPerson}
         onClose={() => setSelectedModalPerson(null)}
       />
+
+      {/* College CCTV RTSP Stream Settings Modal */}
+      {showSettingsModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-lg rounded-2xl border border-white/[0.1] bg-[#0f1422] p-6 shadow-2xl">
+            <div className="mb-4 flex items-center justify-between border-b border-white/[0.08] pb-3">
+              <div className="flex items-center gap-2">
+                <Server size={18} className="text-[#6d5dfc]" />
+                <h3 className="text-base font-bold text-white">College CCTV RTSP Stream Settings</h3>
+              </div>
+              <button
+                onClick={() => setShowSettingsModal(false)}
+                className="rounded-lg p-1 text-[#64748b] hover:bg-white/10 hover:text-white"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveRtspSettings} className="space-y-4">
+              <div>
+                <label className="mb-1 block text-xs font-semibold text-[#8b93a7]">
+                  College NVR / Central RTSP Stream URI *
+                </label>
+                <input
+                  type="text"
+                  required
+                  placeholder="rtsp://admin:password@192.168.1.100:554/Streaming/Channels/{ch}02"
+                  value={tempRtspUri}
+                  onChange={(e) => setTempRtspUri(e.target.value)}
+                  className="w-full rounded-xl border border-white/[0.1] bg-[#161c2d] px-3.5 py-2.5 text-xs text-white font-mono placeholder-[#4b5563] outline-none focus:border-[#6d5dfc]"
+                />
+                <p className="mt-1.5 text-[11px] text-[#71717a]">
+                  Ye ek hi RTSP Stream URI saare college cameras ke liye use hogi. Aap <code className="text-[#a594fd]">&#123;ch&#125;</code> use kar sakte hain channel number ke liye.
+                </p>
+              </div>
+
+              {/* Brand Presets */}
+              <div>
+                <div className="mb-2 text-xs font-semibold text-[#8b93a7]">
+                  Quick College Brand Templates:
+                </div>
+                <div className="grid grid-cols-1 gap-2 text-xs">
+                  <button
+                    type="button"
+                    onClick={() => setTempRtspUri("rtsp://admin:college123@192.168.1.100:554/Streaming/Channels/{ch}02")}
+                    className="flex items-center justify-between rounded-xl border border-white/[0.08] bg-[#161c2d] p-2.5 text-left text-white hover:border-[#6d5dfc] transition"
+                  >
+                    <div>
+                      <div className="font-semibold text-white">Hikvision NVR / IP Cam</div>
+                      <div className="text-[10px] text-[#71717a] font-mono">rtsp://admin:pass@IP:554/Streaming/Channels/&#123;ch&#125;02</div>
+                    </div>
+                    <span className="text-[10px] font-bold text-[#6d5dfc]">Select</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setTempRtspUri("rtsp://admin:college123@192.168.1.100:554/cam/realmonitor?channel={ch}&subtype=1")}
+                    className="flex items-center justify-between rounded-xl border border-white/[0.08] bg-[#161c2d] p-2.5 text-left text-white hover:border-[#6d5dfc] transition"
+                  >
+                    <div>
+                      <div className="font-semibold text-white">CP Plus / Dahua NVR</div>
+                      <div className="text-[10px] text-[#71717a] font-mono">rtsp://admin:pass@IP:554/cam/realmonitor?channel=&#123;ch&#125;&amp;subtype=1</div>
+                    </div>
+                    <span className="text-[10px] font-bold text-[#6d5dfc]">Select</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setTempRtspUri("rtsp://admin:college123@192.168.1.100:554/ch{ch}/sub/av_stream")}
+                    className="flex items-center justify-between rounded-xl border border-white/[0.08] bg-[#161c2d] p-2.5 text-left text-white hover:border-[#6d5dfc] transition"
+                  >
+                    <div>
+                      <div className="font-semibold text-white">Generic / XM NVR</div>
+                      <div className="text-[10px] text-[#71717a] font-mono">rtsp://admin:pass@IP:554/ch&#123;ch&#125;/sub/av_stream</div>
+                    </div>
+                    <span className="text-[10px] font-bold text-[#6d5dfc]">Select</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setTempRtspUri("0")}
+                    className="flex items-center justify-between rounded-xl border border-white/[0.08] bg-[#161c2d] p-2.5 text-left text-white hover:border-[#6d5dfc] transition"
+                  >
+                    <div>
+                      <div className="font-semibold text-white">Laptop / PC Webcam (Test Mode)</div>
+                      <div className="text-[10px] text-[#71717a] font-mono">Index 0</div>
+                    </div>
+                    <span className="text-[10px] font-bold text-[#6d5dfc]">Select</span>
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setShowSettingsModal(false)}
+                  className="rounded-xl border border-white/[0.1] px-4 py-2 text-xs font-semibold text-[#8b93a7] hover:bg-white/[0.05] hover:text-white"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={backendLoading}
+                  className="flex items-center gap-1.5 rounded-xl bg-[#6d5dfc] px-4 py-2 text-xs font-semibold text-white shadow-lg shadow-[#6d5dfc]/30 hover:bg-[#7b6bff]"
+                >
+                  <span>Save &amp; Apply URI</span>
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
