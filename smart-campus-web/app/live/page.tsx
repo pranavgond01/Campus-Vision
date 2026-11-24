@@ -10,7 +10,9 @@ import {
 import Link from "next/link";
 
 import {
+  AlertCircle,
   Camera,
+  CheckCircle2,
   ChevronLeft,
   ChevronRight,
   CircleStop,
@@ -19,6 +21,8 @@ import {
   Play,
   Plus,
   Radio,
+  RefreshCw,
+  Search,
   Server,
   Settings,
   Trash2,
@@ -33,11 +37,13 @@ import {
 import {
   API_URL,
   CameraStatus,
+  DiscoveredCamera,
   RecognitionApiResponse,
   RecognitionResult,
   getCameraResults,
   getCameraStatus,
   recognizeFrame,
+  scanCameras,
   startCamera,
   stopCamera,
 } from "@/lib/api";
@@ -119,25 +125,108 @@ export default function LivePage() {
   const [backendLoading, setBackendLoading] = useState(false);
   const [backendError, setBackendError] = useState("");
 
-  // Single RTSP Stream URI & Multi-Channel Switcher
+  // Single RTSP Stream URI & Auto-Detected Channels
   const [rtspUri, setRtspUri] = useState<string>(DEFAULT_RTSP_URI);
-  const [channels, setChannels] = useState<CameraChannel[]>(DEFAULT_CHANNELS);
+  const [channels, setChannels] = useState<CameraChannel[]>([]);
   const [activeChannel, setActiveChannel] = useState<number>(1);
   const [streamKey, setStreamKey] = useState<number>(Date.now());
   const [showSettingsModal, setShowSettingsModal] = useState<boolean>(false);
   const [tempRtspUri, setTempRtspUri] = useState<string>(DEFAULT_RTSP_URI);
+  const [isScanning, setIsScanning] = useState<boolean>(false);
+  const [scanMessage, setScanMessage] = useState<string>("");
+  const [discoveredList, setDiscoveredList] = useState<DiscoveredCamera[]>([]);
+
+  const activeChannelObj = channels.find((c) => c.channel === activeChannel) || channels[0] || {
+    channel: activeChannel,
+    name: `Camera ${activeChannel}`,
+    location: "Active",
+  };
+
+  const handleScanCameras = async (targetUri?: string, fallback: boolean = false) => {
+    const uri = (targetUri || tempRtspUri || rtspUri).trim();
+    if (!uri) return;
+    setIsScanning(true);
+    setScanMessage("");
+    try {
+      const res = await scanCameras(uri, 16, fallback);
+      if (res.success && res.cameras.length > 0) {
+        setDiscoveredList(res.cameras);
+        const newChannels: CameraChannel[] = res.cameras.map((c) => ({
+          channel: c.channel,
+          name: c.name || `CCTV Camera ${c.channel}`,
+          location: c.location || (c.resolution ? `Online (${c.resolution})` : "Active Stream"),
+        }));
+        setChannels(newChannels);
+        const targetChannel = newChannels[0].channel;
+        setActiveChannel(targetChannel);
+        setScanMessage(res.message);
+        try {
+          localStorage.setItem("smart_campus_detected_channels", JSON.stringify(newChannels));
+        } catch {}
+
+        if (backendStatus?.running) {
+          const resolvedUrl = getStreamUrlForChannel(uri, targetChannel);
+          await startCamera({
+            source: resolvedUrl,
+            camera_id: `CAM-${String(targetChannel).padStart(2, "0")}`,
+            camera_name: newChannels[0].name,
+          });
+          setStreamKey(Date.now());
+          await refreshBackend();
+        }
+      } else {
+        setDiscoveredList([]);
+        setChannels([]);
+        setScanMessage(res.message || "No active CCTV cameras detected on this stream.");
+        try {
+          localStorage.removeItem("smart_campus_detected_channels");
+        } catch {}
+      }
+    } catch (err) {
+      setDiscoveredList([]);
+      setChannels([]);
+      setScanMessage(err instanceof Error ? err.message : "Scanning failed. Could not reach stream or server.");
+      try {
+        localStorage.removeItem("smart_campus_detected_channels");
+      } catch {}
+    } finally {
+      setIsScanning(false);
+    }
+  };
 
   useEffect(() => {
+    let uriToScan = DEFAULT_RTSP_URI;
     try {
       const savedUri = localStorage.getItem("smart_campus_rtsp_uri");
       if (savedUri && savedUri.trim()) {
+        uriToScan = savedUri.trim();
         setRtspUri(savedUri.trim());
         setTempRtspUri(savedUri.trim());
       }
+      const savedChannels = localStorage.getItem("smart_campus_detected_channels");
+      if (savedChannels) {
+        const parsed = JSON.parse(savedChannels);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          setChannels(parsed);
+          setActiveChannel(parsed[0].channel);
+          setDiscoveredList(
+            parsed.map((c: CameraChannel) => ({
+              channel: c.channel,
+              name: c.name,
+              source: getStreamUrlForChannel(uriToScan, c.channel),
+              status: "online",
+              location: c.location,
+              type: "cctv",
+            }))
+          );
+          return;
+        }
+      }
     } catch {}
-  }, []);
 
-  const activeChannelObj = channels.find((c) => c.channel === activeChannel) || channels[0];
+    // Auto-detect cameras on first load
+    handleScanCameras(uriToScan, false);
+  }, []);
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -416,7 +505,7 @@ export default function LivePage() {
       localStorage.setItem("smart_campus_rtsp_uri", cleanUri);
     } catch {}
     setShowSettingsModal(false);
-    await handleSwitchChannel(activeChannel);
+    await handleScanCameras(cleanUri);
   };
 
   return (
@@ -479,18 +568,20 @@ export default function LivePage() {
                 <div className="flex items-center gap-2">
                   <Video size={16} className="text-[#6d5dfc]" />
                   <span className="text-xs font-bold uppercase tracking-wider text-white">
-                    College CCTV Switcher ({channels.length} Cameras)
+                    College CCTV Switcher ({channels.length} Detected {channels.length === 1 ? "Camera" : "Cameras"})
                   </span>
-                  <span className="rounded-md bg-[#6d5dfc]/15 px-2 py-0.5 text-[11px] font-semibold text-[#a594fd]">
-                    Active: CAM {String(activeChannel).padStart(2, "0")} ({activeChannelObj.name})
-                  </span>
+                  {channels.length > 0 && activeChannelObj && (
+                    <span className="rounded-md bg-[#6d5dfc]/15 px-2 py-0.5 text-[11px] font-semibold text-[#a594fd]">
+                      Active: CAM {String(activeChannel).padStart(2, "0")} ({activeChannelObj.name})
+                    </span>
+                  )}
                 </div>
 
                 <div className="flex items-center gap-2">
                   <button
                     onClick={handlePrevCamera}
-                    disabled={backendLoading}
-                    className="flex items-center gap-1 rounded-lg border border-white/[0.1] bg-white/[0.03] px-2.5 py-1 text-xs font-medium text-[#8b93a7] hover:bg-white/[0.08] hover:text-white transition"
+                    disabled={backendLoading || channels.length <= 1}
+                    className="flex items-center gap-1 rounded-lg border border-white/[0.1] bg-white/[0.03] px-2.5 py-1 text-xs font-medium text-[#8b93a7] hover:bg-white/[0.08] hover:text-white transition disabled:opacity-40"
                     title="Previous Camera"
                   >
                     <ChevronLeft size={14} />
@@ -499,8 +590,8 @@ export default function LivePage() {
 
                   <button
                     onClick={handleNextCamera}
-                    disabled={backendLoading}
-                    className="flex items-center gap-1 rounded-lg border border-white/[0.1] bg-white/[0.03] px-2.5 py-1 text-xs font-medium text-[#8b93a7] hover:bg-white/[0.08] hover:text-white transition"
+                    disabled={backendLoading || channels.length <= 1}
+                    className="flex items-center gap-1 rounded-lg border border-white/[0.1] bg-white/[0.03] px-2.5 py-1 text-xs font-medium text-[#8b93a7] hover:bg-white/[0.08] hover:text-white transition disabled:opacity-40"
                     title="Next Camera"
                   >
                     <span>Next</span>
@@ -508,51 +599,104 @@ export default function LivePage() {
                   </button>
 
                   <button
+                    onClick={() => handleScanCameras()}
+                    disabled={isScanning || backendLoading}
+                    className="flex items-center gap-1.5 rounded-lg border border-white/[0.1] bg-white/[0.03] px-2.5 py-1 text-xs font-medium text-[#8b93a7] hover:bg-white/[0.08] hover:text-white transition disabled:opacity-40"
+                    title="Auto-Detect Active CCTV Cameras"
+                  >
+                    <RefreshCw size={13} className={isScanning ? "animate-spin text-[#6d5dfc]" : ""} />
+                    <span>{isScanning ? "Scanning..." : "Detect Cameras"}</span>
+                  </button>
+
+                  <button
                     onClick={() => {
                       setTempRtspUri(rtspUri);
                       setShowSettingsModal(true);
                     }}
-                    className="flex items-center gap-1.5 rounded-lg bg-white/[0.08] px-3 py-1 text-xs font-semibold text-white hover:bg-white/[0.15] transition"
+                    className="flex items-center gap-1.5 rounded-lg bg-[#6d5dfc]/15 px-3 py-1 text-xs font-semibold text-[#a594fd] hover:bg-[#6d5dfc]/25 hover:text-white transition"
                   >
                     <Settings size={13} />
-                    <span>RTSP Stream URI</span>
+                    <span>Stream URI</span>
                   </button>
                 </div>
               </div>
 
               {/* Numbered Camera Channel Buttons (1 by 1) */}
-              <div className="flex flex-wrap items-center gap-2">
-                {channels.map((ch) => {
-                  const isCurrent = activeChannel === ch.channel;
-                  const isLive = isCurrent && backendStatus?.running;
-                  return (
+              {channels.length === 0 ? (
+                <div className="flex flex-col sm:flex-row items-center justify-between gap-3 rounded-xl border border-dashed border-white/[0.1] bg-[#121724]/50 p-3.5 text-xs text-[#8b93a7]">
+                  <div className="flex items-center gap-2.5">
+                    <Search size={15} className="text-[#6d5dfc]" />
+                    <div>
+                      <span className="font-semibold text-white">No active CCTV cameras detected on this stream.</span>
+                      <p className="text-[11px] text-[#71717a] mt-0.5">
+                        {scanMessage || "Enter your College RTSP Stream URI to detect active channels."}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
                     <button
-                      key={ch.channel}
-                      onClick={() => handleSwitchChannel(ch.channel)}
-                      disabled={backendLoading}
-                      className={`flex items-center gap-2 rounded-xl border px-3 py-2 text-xs transition ${
-                        isCurrent
-                          ? "border-[#6d5dfc] bg-[#6d5dfc]/20 text-white shadow-sm shadow-[#6d5dfc]/30 font-semibold"
-                          : "border-white/[0.08] bg-[#121724] text-[#8b93a7] hover:border-white/20 hover:text-white"
-                      }`}
+                      onClick={() => handleScanCameras()}
+                      disabled={isScanning}
+                      className="flex items-center gap-1.5 rounded-lg bg-[#6d5dfc] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#7b6bff]"
                     >
-                      <span
-                        className={`h-2 w-2 rounded-full ${
-                          isLive
-                            ? "bg-[#22c55e] animate-pulse"
-                            : isCurrent
-                            ? "bg-[#f59e0b]"
-                            : "bg-[#4a5568]"
-                        }`}
-                      />
-                      <span className="font-mono text-[11px] font-bold text-[#6d5dfc]">
-                        CAM {String(ch.channel).padStart(2, "0")}
-                      </span>
-                      <span>{ch.name}</span>
+                      <RefreshCw size={12} className={isScanning ? "animate-spin" : ""} />
+                      <span>{isScanning ? "Scanning..." : "Detect Active Cameras"}</span>
                     </button>
-                  );
-                })}
-              </div>
+                    <button
+                      onClick={() => {
+                        setTempRtspUri("0");
+                        setRtspUri("0");
+                        handleScanCameras("0");
+                      }}
+                      disabled={isScanning}
+                      className="flex items-center gap-1.5 rounded-lg border border-white/[0.1] bg-white/[0.05] px-3 py-1.5 text-xs font-medium text-white hover:bg-white/[0.1]"
+                    >
+                      <Laptop size={12} />
+                      <span>Use Laptop Webcam (0)</span>
+                    </button>
+                    <button
+                      onClick={() => handleScanCameras(rtspUri, true)}
+                      disabled={isScanning}
+                      className="flex items-center gap-1.5 rounded-lg border border-white/[0.1] bg-white/[0.05] px-3 py-1.5 text-xs font-medium text-[#a594fd] hover:bg-white/[0.1]"
+                    >
+                      <span>Load 4 Demo Channels</span>
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex flex-wrap items-center gap-2">
+                  {channels.map((ch) => {
+                    const isCurrent = activeChannel === ch.channel;
+                    const isLive = isCurrent && backendStatus?.running;
+                    return (
+                      <button
+                        key={ch.channel}
+                        onClick={() => handleSwitchChannel(ch.channel)}
+                        disabled={backendLoading}
+                        className={`flex items-center gap-2 rounded-xl border px-3 py-2 text-xs transition ${
+                          isCurrent
+                            ? "border-[#6d5dfc] bg-[#6d5dfc]/20 text-white shadow-sm shadow-[#6d5dfc]/30 font-semibold"
+                            : "border-white/[0.08] bg-[#121724] text-[#8b93a7] hover:border-white/20 hover:text-white"
+                        }`}
+                      >
+                        <span
+                          className={`h-2 w-2 rounded-full ${
+                            isLive
+                              ? "bg-[#22c55e] animate-pulse"
+                              : isCurrent
+                              ? "bg-[#f59e0b]"
+                              : "bg-[#4a5568]"
+                          }`}
+                        />
+                        <span className="font-mono text-[11px] font-bold text-[#6d5dfc]">
+                          CAM {String(ch.channel).padStart(2, "0")}
+                        </span>
+                        <span>{ch.name}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           )}
 
@@ -1003,11 +1147,18 @@ export default function LivePage() {
       {/* College CCTV RTSP Stream Settings Modal */}
       {showSettingsModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm">
-          <div className="w-full max-w-lg rounded-2xl border border-white/[0.1] bg-[#0f1422] p-6 shadow-2xl">
+          <div className="w-full max-w-xl max-h-[90vh] overflow-y-auto rounded-2xl border border-white/[0.1] bg-[#0f1422] p-6 shadow-2xl">
             <div className="mb-4 flex items-center justify-between border-b border-white/[0.08] pb-3">
-              <div className="flex items-center gap-2">
-                <Server size={18} className="text-[#6d5dfc]" />
-                <h3 className="text-base font-bold text-white">College CCTV RTSP Stream Settings</h3>
+              <div className="flex items-center gap-2.5">
+                <div className="rounded-lg bg-[#6d5dfc]/15 p-2 text-[#6d5dfc]">
+                  <Server size={18} />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-white">College CCTV RTSP Stream Settings</h3>
+                  <p className="text-[11px] text-[#8b93a7]">
+                    Stream URI dalne pr system auto-detect karega ki kitne CCTV cameras active hain
+                  </p>
+                </div>
               </div>
               <button
                 onClick={() => setShowSettingsModal(false)}
@@ -1022,90 +1173,185 @@ export default function LivePage() {
                 <label className="mb-1 block text-xs font-semibold text-[#8b93a7]">
                   College NVR / Central RTSP Stream URI *
                 </label>
-                <input
-                  type="text"
-                  required
-                  placeholder="rtsp://admin:password@192.168.1.100:554/Streaming/Channels/{ch}02"
-                  value={tempRtspUri}
-                  onChange={(e) => setTempRtspUri(e.target.value)}
-                  className="w-full rounded-xl border border-white/[0.1] bg-[#161c2d] px-3.5 py-2.5 text-xs text-white font-mono placeholder-[#4b5563] outline-none focus:border-[#6d5dfc]"
-                />
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    required
+                    placeholder="rtsp://admin:password@192.168.1.100:554/Streaming/Channels/{ch}02"
+                    value={tempRtspUri}
+                    onChange={(e) => setTempRtspUri(e.target.value)}
+                    className="flex-1 rounded-xl border border-white/[0.1] bg-[#161c2d] px-3.5 py-2.5 text-xs text-white font-mono placeholder-[#4b5563] outline-none focus:border-[#6d5dfc]"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => handleScanCameras(tempRtspUri)}
+                    disabled={isScanning}
+                    className="flex items-center gap-1.5 rounded-xl bg-[#6d5dfc] px-4 py-2.5 text-xs font-semibold text-white shadow-lg shadow-[#6d5dfc]/25 hover:bg-[#7b6bff] transition disabled:opacity-50 shrink-0"
+                  >
+                    <RefreshCw size={13} className={isScanning ? "animate-spin" : ""} />
+                    <span>{isScanning ? "Detecting..." : "Detect Cameras"}</span>
+                  </button>
+                </div>
                 <p className="mt-1.5 text-[11px] text-[#71717a]">
-                  Ye ek hi RTSP Stream URI saare college cameras ke liye use hogi. Aap <code className="text-[#a594fd]">&#123;ch&#125;</code> use kar sakte hain channel number ke liye.
+                  Ye ek hi RTSP Stream URI saare college cameras ke liye use hogi. Channel switch ke liye <code className="text-[#a594fd]">&#123;ch&#125;</code> placeholder use karein. (e.g. <code>.../Channels/&#123;ch&#125;02</code>)
                 </p>
               </div>
+
+              {/* Scanning status banner */}
+              {isScanning && (
+                <div className="flex items-center gap-2.5 rounded-xl border border-[#6d5dfc]/30 bg-[#6d5dfc]/10 p-3 text-xs text-[#c4b5fd]">
+                  <RefreshCw size={14} className="animate-spin text-[#6d5dfc] shrink-0" />
+                  <span>Probing NVR on port 554 and scanning active camera channels... Please wait.</span>
+                </div>
+              )}
+
+              {/* Scan Result Feedback Alert */}
+              {!isScanning && scanMessage && (
+                <div
+                  className={`flex items-start gap-2.5 rounded-xl border p-3 text-xs ${
+                    discoveredList.length > 0
+                      ? "border-[#22c55e]/30 bg-[#22c55e]/10 text-[#86efac]"
+                      : "border-[#ef4444]/30 bg-[#ef4444]/10 text-[#fca5a5]"
+                  }`}
+                >
+                  {discoveredList.length > 0 ? (
+                    <CheckCircle2 size={16} className="text-[#22c55e] shrink-0 mt-0.5" />
+                  ) : (
+                    <AlertCircle size={16} className="text-[#ef4444] shrink-0 mt-0.5" />
+                  )}
+                  <div className="flex-1">
+                    <div className="font-semibold">{scanMessage}</div>
+                    {discoveredList.length === 0 && (
+                      <div className="mt-1 text-[11px] text-[#f87171]">
+                        Check karein ki laptop aur NVR same Wi-Fi/LAN pr connected hain ya local test ke liye niche &quot;Laptop Webcam&quot; select karein.
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Discovered Cameras Preview */}
+              {discoveredList.length > 0 && (
+                <div className="rounded-xl border border-white/[0.08] bg-[#121724] p-3">
+                  <div className="mb-2 flex items-center justify-between text-xs font-semibold text-white">
+                    <div className="flex items-center gap-1.5">
+                      <Camera size={14} className="text-[#6d5dfc]" />
+                      <span>Detected Active CCTV Cameras ({discoveredList.length})</span>
+                    </div>
+                    <span className="text-[10px] text-[#22c55e] font-mono">ALL READY</span>
+                  </div>
+                  <div className="max-h-36 overflow-y-auto space-y-1.5 pr-1">
+                    {discoveredList.map((cam) => (
+                      <div
+                        key={cam.channel}
+                        className="flex items-center justify-between rounded-lg bg-white/[0.03] px-3 py-1.5 text-xs text-white"
+                      >
+                        <div className="flex items-center gap-2">
+                          <span className="font-mono text-[11px] font-bold text-[#6d5dfc]">
+                            CAM {String(cam.channel).padStart(2, "0")}
+                          </span>
+                          <span>{cam.name}</span>
+                        </div>
+                        <span className="text-[10px] text-[#8b93a7]">
+                          {cam.resolution || "Active Stream"}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
 
               {/* Brand Presets */}
               <div>
                 <div className="mb-2 text-xs font-semibold text-[#8b93a7]">
                   Quick College Brand Templates:
                 </div>
-                <div className="grid grid-cols-1 gap-2 text-xs">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
                   <button
                     type="button"
-                    onClick={() => setTempRtspUri("rtsp://admin:college123@192.168.1.100:554/Streaming/Channels/{ch}02")}
-                    className="flex items-center justify-between rounded-xl border border-white/[0.08] bg-[#161c2d] p-2.5 text-left text-white hover:border-[#6d5dfc] transition"
+                    onClick={() => {
+                      const u = "rtsp://admin:college123@192.168.1.100:554/Streaming/Channels/{ch}02";
+                      setTempRtspUri(u);
+                      handleScanCameras(u);
+                    }}
+                    className="flex flex-col justify-between rounded-xl border border-white/[0.08] bg-[#161c2d] p-2.5 text-left text-white hover:border-[#6d5dfc] transition"
                   >
-                    <div>
-                      <div className="font-semibold text-white">Hikvision NVR / IP Cam</div>
-                      <div className="text-[10px] text-[#71717a] font-mono">rtsp://admin:pass@IP:554/Streaming/Channels/&#123;ch&#125;02</div>
-                    </div>
-                    <span className="text-[10px] font-bold text-[#6d5dfc]">Select</span>
+                    <div className="font-semibold text-white text-xs">Hikvision NVR</div>
+                    <div className="text-[10px] text-[#71717a] font-mono truncate">.../Channels/&#123;ch&#125;02</div>
                   </button>
 
                   <button
                     type="button"
-                    onClick={() => setTempRtspUri("rtsp://admin:college123@192.168.1.100:554/cam/realmonitor?channel={ch}&subtype=1")}
-                    className="flex items-center justify-between rounded-xl border border-white/[0.08] bg-[#161c2d] p-2.5 text-left text-white hover:border-[#6d5dfc] transition"
+                    onClick={() => {
+                      const u = "rtsp://admin:college123@192.168.1.100:554/cam/realmonitor?channel={ch}&subtype=1";
+                      setTempRtspUri(u);
+                      handleScanCameras(u);
+                    }}
+                    className="flex flex-col justify-between rounded-xl border border-white/[0.08] bg-[#161c2d] p-2.5 text-left text-white hover:border-[#6d5dfc] transition"
                   >
-                    <div>
-                      <div className="font-semibold text-white">CP Plus / Dahua NVR</div>
-                      <div className="text-[10px] text-[#71717a] font-mono">rtsp://admin:pass@IP:554/cam/realmonitor?channel=&#123;ch&#125;&amp;subtype=1</div>
-                    </div>
-                    <span className="text-[10px] font-bold text-[#6d5dfc]">Select</span>
+                    <div className="font-semibold text-white text-xs">CP Plus / Dahua</div>
+                    <div className="text-[10px] text-[#71717a] font-mono truncate">channel=&#123;ch&#125;&amp;subtype=1</div>
                   </button>
 
                   <button
                     type="button"
-                    onClick={() => setTempRtspUri("rtsp://admin:college123@192.168.1.100:554/ch{ch}/sub/av_stream")}
-                    className="flex items-center justify-between rounded-xl border border-white/[0.08] bg-[#161c2d] p-2.5 text-left text-white hover:border-[#6d5dfc] transition"
+                    onClick={() => {
+                      const u = "rtsp://admin:college123@192.168.1.100:554/ch{ch}/sub/av_stream";
+                      setTempRtspUri(u);
+                      handleScanCameras(u);
+                    }}
+                    className="flex flex-col justify-between rounded-xl border border-white/[0.08] bg-[#161c2d] p-2.5 text-left text-white hover:border-[#6d5dfc] transition"
                   >
-                    <div>
-                      <div className="font-semibold text-white">Generic / XM NVR</div>
-                      <div className="text-[10px] text-[#71717a] font-mono">rtsp://admin:pass@IP:554/ch&#123;ch&#125;/sub/av_stream</div>
-                    </div>
-                    <span className="text-[10px] font-bold text-[#6d5dfc]">Select</span>
+                    <div className="font-semibold text-white text-xs">Generic XM NVR</div>
+                    <div className="text-[10px] text-[#71717a] font-mono truncate">/ch&#123;ch&#125;/sub/av_stream</div>
                   </button>
 
                   <button
                     type="button"
-                    onClick={() => setTempRtspUri("0")}
-                    className="flex items-center justify-between rounded-xl border border-white/[0.08] bg-[#161c2d] p-2.5 text-left text-white hover:border-[#6d5dfc] transition"
+                    onClick={() => {
+                      setTempRtspUri("0");
+                      handleScanCameras("0");
+                    }}
+                    className="flex flex-col justify-between rounded-xl border border-white/[0.08] bg-[#161c2d] p-2.5 text-left text-white hover:border-[#6d5dfc] transition"
                   >
-                    <div>
-                      <div className="font-semibold text-white">Laptop / PC Webcam (Test Mode)</div>
-                      <div className="text-[10px] text-[#71717a] font-mono">Index 0</div>
-                    </div>
-                    <span className="text-[10px] font-bold text-[#6d5dfc]">Select</span>
+                    <div className="font-semibold text-white text-xs">Laptop Webcam (0)</div>
+                    <div className="text-[10px] text-[#71717a] font-mono">Index 0 (Local Test)</div>
                   </button>
                 </div>
               </div>
 
-              <div className="flex justify-end gap-2 pt-2">
-                <button
-                  type="button"
-                  onClick={() => setShowSettingsModal(false)}
-                  className="rounded-xl border border-white/[0.1] px-4 py-2 text-xs font-semibold text-[#8b93a7] hover:bg-white/[0.05] hover:text-white"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={backendLoading}
-                  className="flex items-center gap-1.5 rounded-xl bg-[#6d5dfc] px-4 py-2 text-xs font-semibold text-white shadow-lg shadow-[#6d5dfc]/30 hover:bg-[#7b6bff]"
-                >
-                  <span>Save &amp; Apply URI</span>
-                </button>
+              {/* Modal Actions */}
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-white/[0.08]">
+                {discoveredList.length === 0 && (
+                  <button
+                    type="button"
+                    onClick={() => handleScanCameras(tempRtspUri, true)}
+                    disabled={isScanning}
+                    className="text-xs text-[#a594fd] hover:underline"
+                  >
+                    Offline Test: Load 4 Demo Channels
+                  </button>
+                )}
+                <div className="flex items-center gap-2 ml-auto">
+                  <button
+                    type="button"
+                    onClick={() => setShowSettingsModal(false)}
+                    className="rounded-xl border border-white/[0.1] px-4 py-2 text-xs font-semibold text-[#8b93a7] hover:bg-white/[0.05] hover:text-white"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={backendLoading || isScanning}
+                    className="flex items-center gap-1.5 rounded-xl bg-[#6d5dfc] px-4 py-2 text-xs font-semibold text-white shadow-lg shadow-[#6d5dfc]/30 hover:bg-[#7b6bff]"
+                  >
+                    <span>
+                      {discoveredList.length > 0
+                        ? `Save & Apply (${discoveredList.length} Cameras)`
+                        : "Detect & Apply"}
+                    </span>
+                  </button>
+                </div>
               </div>
             </form>
           </div>

@@ -68,6 +68,25 @@ export interface CameraPreset {
   type: string;
 }
 
+export interface DiscoveredCamera {
+  channel: number;
+  name: string;
+  source: string;
+  status: string;
+  resolution?: string;
+  location?: string;
+  type: string;
+}
+
+export interface CameraScanResponse {
+  success: boolean;
+  detected_count: number;
+  cameras: DiscoveredCamera[];
+  host?: string;
+  is_simulated?: boolean;
+  message: string;
+}
+
 async function request<T>(
   endpoint: string,
   options?: RequestInit,
@@ -230,6 +249,21 @@ export async function startCamera(params?: {
 
 export async function getCameraPresets(): Promise<CameraPreset[]> {
   return request<CameraPreset[]>("/api/camera/presets");
+}
+
+export async function scanCameras(
+  source: string,
+  maxChannels: number = 16,
+  allowSimulationFallback: boolean = false,
+): Promise<CameraScanResponse> {
+  return request<CameraScanResponse>("/api/camera/scan", {
+    method: "POST",
+    body: JSON.stringify({
+      source,
+      max_channels: maxChannels,
+      allow_simulation_fallback: allowSimulationFallback,
+    }),
+  });
 }
 
 export async function stopCamera() {

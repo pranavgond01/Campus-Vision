@@ -1,9 +1,17 @@
 from __future__ import annotations
 
+import os
+import re
+import socket
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import Any, Optional
+from urllib.parse import urlparse
+
+# Fast socket / RTSP timeout for FFmpeg
+os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp|timeout;1500000|stimeout;1500000"
 
 import cv2
 import numpy as np
@@ -72,6 +80,12 @@ class CameraConnectRequest(BaseModel):
     source: Optional[str] = "0"
     camera_id: Optional[str] = DEFAULT_CAMERA_ID
     camera_name: Optional[str] = "Local Webcam"
+
+
+class CameraScanRequest(BaseModel):
+    source: str
+    max_channels: Optional[int] = 16
+    allow_simulation_fallback: Optional[bool] = False
 
 
 # ============================================================
@@ -866,6 +880,191 @@ def camera_presets():
             "type": "cctv",
         },
     ]
+
+
+# ============================================================
+# CCTV CHANNEL DISCOVERY & AUTO-SCAN
+# ============================================================
+
+def resolve_channel_url(template_uri: str, channel: int) -> str:
+    trimmed = (template_uri or "").strip()
+    if not trimmed or trimmed.isdigit():
+        return str(channel - 1) if channel >= 1 else "0"
+
+    if "{ch}" in trimmed:
+        return trimmed.replace("{ch}", str(channel))
+    if "{channel}" in trimmed:
+        return trimmed.replace("{channel}", str(channel))
+
+    # Hikvision style: /Channels/102 or /Channels/101
+    if re.search(r"/Channels/\d+", trimmed, re.IGNORECASE):
+        return re.sub(r"/Channels/\d+", f"/Channels/{channel}02", trimmed, flags=re.IGNORECASE)
+
+    # Dahua / CP Plus style: channel=1
+    if re.search(r"channel=\d+", trimmed, re.IGNORECASE):
+        return re.sub(r"channel=\d+", f"channel={channel}", trimmed, flags=re.IGNORECASE)
+
+    # Generic NVR style: /ch1/
+    if re.search(r"/ch\d+/", trimmed, re.IGNORECASE):
+        return re.sub(r"/ch\d+/", f"/ch{channel}/", trimmed, flags=re.IGNORECASE)
+
+    return trimmed
+
+
+def check_host_accessible(source_uri: str) -> tuple[bool, str]:
+    trimmed = source_uri.strip()
+    if trimmed.isdigit() or trimmed in ("0", "1", "2"):
+        return True, "localhost"
+    try:
+        parsed = urlparse(trimmed)
+        host = parsed.hostname
+        port = parsed.port or 554
+        if not host:
+            return True, ""
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(1.2)
+        result = sock.connect_ex((host, port))
+        sock.close()
+        return (result == 0), host
+    except Exception:
+        return False, ""
+
+
+def probe_channel(template_uri: str, channel_num: int) -> Optional[dict]:
+    url = resolve_channel_url(template_uri, channel_num)
+    try:
+        cap = cv2.VideoCapture(url, cv2.CAP_FFMPEG)
+        if not cap.isOpened():
+            cap = cv2.VideoCapture(url)
+        if cap.isOpened():
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            ret, frame = cap.read()
+            if ret and frame is not None:
+                w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 640)
+                h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 360)
+                cap.release()
+                return {
+                    "channel": channel_num,
+                    "name": f"CCTV Camera {channel_num}",
+                    "source": url,
+                    "status": "online",
+                    "resolution": f"{w}x{h}",
+                    "type": "cctv",
+                }
+            cap.release()
+    except Exception:
+        pass
+    return None
+
+
+@router.post("/scan")
+def scan_cctv_channels(req: CameraScanRequest):
+    source_str = (req.source or "").strip()
+    if not source_str:
+        return {
+            "success": False,
+            "detected_count": 0,
+            "cameras": [],
+            "message": "Please provide an RTSP Stream URI or webcam index.",
+        }
+
+    # If numeric webcam index
+    if source_str.isdigit():
+        detected_webcams = []
+        for idx in range(4):
+            try:
+                cap = cv2.VideoCapture(idx, cv2.CAP_DSHOW)
+                if not cap.isOpened():
+                    cap = cv2.VideoCapture(idx)
+                if cap.isOpened():
+                    ret, frame = cap.read()
+                    if ret and frame is not None:
+                        w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 1280)
+                        h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 720)
+                        detected_webcams.append({
+                            "channel": idx + 1,
+                            "name": f"USB Webcam {idx}" if idx > 0 else "Default Laptop / PC Webcam (0)",
+                            "source": str(idx),
+                            "status": "online",
+                            "resolution": f"{w}x{h}",
+                            "location": "Local Host",
+                            "type": "webcam",
+                        })
+                    cap.release()
+            except Exception:
+                pass
+        return {
+            "success": len(detected_webcams) > 0,
+            "detected_count": len(detected_webcams),
+            "cameras": detected_webcams,
+            "message": f"Detected {len(detected_webcams)} local video device(s).",
+        }
+
+    # RTSP Stream Check
+    is_accessible, host = check_host_accessible(source_str)
+    max_ch = min(max(1, req.max_channels or 16), 32)
+    online_cameras = []
+
+    if is_accessible:
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            futures = [executor.submit(probe_channel, source_str, ch) for ch in range(1, max_ch + 1)]
+            for fut in futures:
+                res = fut.result()
+                if res is not None:
+                    online_cameras.append(res)
+
+        online_cameras.sort(key=lambda x: x["channel"])
+
+    if len(online_cameras) > 0:
+        return {
+            "success": True,
+            "detected_count": len(online_cameras),
+            "cameras": online_cameras,
+            "host": host,
+            "is_simulated": False,
+            "message": f"Successfully detected {len(online_cameras)} online CCTV camera(s) on NVR ({host}).",
+        }
+
+    # Fallback simulation only if user explicitly requests fallback
+    if req.allow_simulation_fallback:
+        sim_count = 4
+        sim_cameras = [
+            {
+                "channel": ch,
+                "name": f"Campus CCTV Camera {ch}",
+                "source": resolve_channel_url(source_str, ch),
+                "status": "simulated",
+                "resolution": "1280x720",
+                "location": f"Zone {ch}",
+                "type": "cctv",
+            }
+            for ch in range(1, sim_count + 1)
+        ]
+        return {
+            "success": True,
+            "detected_count": len(sim_cameras),
+            "cameras": sim_cameras,
+            "is_simulated": True,
+            "host": host,
+            "message": f"NVR Host ({host or 'LAN'}) unreachable on current network. Loaded {sim_count} preview demo channels.",
+        }
+
+    if not is_accessible:
+        return {
+            "success": False,
+            "detected_count": 0,
+            "cameras": [],
+            "host": host,
+            "message": f"NVR host '{host or source_str}' is unreachable on port 554. Ensure laptop and NVR are on the same college Wi-Fi/LAN.",
+        }
+
+    return {
+        "success": False,
+        "detected_count": 0,
+        "cameras": [],
+        "host": host,
+        "message": f"Connected to {host}, but no active video streams responded on channels 1-{max_ch}. Verify RTSP URI path.",
+    }
 
 
 # ============================================================
