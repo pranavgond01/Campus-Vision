@@ -25,6 +25,7 @@ from app.vision.enrollment import (
     embedding_to_json,
 )
 from app.vision.recognizer import FaceRecognizer
+from services.face_service import feature_to_bytes
 
 
 def initialize_database():
@@ -345,7 +346,7 @@ def register_person():
                 or None
             ),
             face_embedding=(
-                embedding_json
+                feature_to_bytes(captured_embedding)
             ),
             consent_status=True,
         )

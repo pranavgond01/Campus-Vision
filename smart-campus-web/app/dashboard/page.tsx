@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  useCallback,
   useEffect,
   useState,
 } from "react";
@@ -15,6 +16,7 @@ import {
 import StatCard from "@/components/StatCard";
 
 import {
+  API_URL,
   getCameraStatus,
   getStatistics,
   Statistics,
@@ -34,10 +36,8 @@ export default function DashboardPage() {
   const [error, setError] =
     useState("");
 
-  async function loadData() {
+  const loadData = useCallback(async () => {
     try {
-      setError("");
-
       const [
         statistics,
         cameraStatus,
@@ -48,6 +48,7 @@ export default function DashboardPage() {
 
       setStats(statistics);
       setCamera(cameraStatus);
+      setError("");
     } catch (err) {
       setError(
         err instanceof Error
@@ -57,7 +58,7 @@ export default function DashboardPage() {
     } finally {
       setLoading(false);
     }
-  }
+  }, []);
 
   useEffect(() => {
     loadData();
@@ -70,7 +71,7 @@ export default function DashboardPage() {
 
     return () =>
       clearInterval(interval);
-  }, []);
+  }, [loadData]);
 
   return (
     <div className="mx-auto max-w-[1500px]">
@@ -180,7 +181,7 @@ export default function DashboardPage() {
           <div className="relative flex aspect-video items-center justify-center bg-[#06080d]">
             {camera?.running ? (
               <img
-                src="http://127.0.0.1:8000/api/camera/stream"
+                src={`${API_URL}/api/camera/stream`}
                 alt="Local camera stream"
                 className="h-full w-full object-cover"
               />

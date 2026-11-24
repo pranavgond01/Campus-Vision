@@ -18,17 +18,27 @@ def embedding_to_json(
 
 
 def embedding_from_json(
-    value: str,
+    value: str | bytes,
 ):
+    if isinstance(value, bytes):
+        try:
+            stripped = value.strip()
+            if not (stripped.startswith(b"[") and stripped.endswith(b"]")):
+                return np.frombuffer(value, dtype=np.float32).reshape(1, -1)
+            values = json.loads(stripped.decode("utf-8"))
+            return np.asarray(values, dtype=np.float32).reshape(1, -1)
+        except Exception:
+            return np.frombuffer(value, dtype=np.float32).reshape(1, -1)
 
-    values = json.loads(value)
+    if isinstance(value, str):
+        values = json.loads(value)
+        array = np.asarray(
+            values,
+            dtype=np.float32,
+        )
+        return array.reshape(
+            1,
+            -1,
+        )
 
-    array = np.asarray(
-        values,
-        dtype=np.float32,
-    )
-
-    return array.reshape(
-        1,
-        -1,
-    )
+    return np.asarray(value, dtype=np.float32).reshape(1, -1)

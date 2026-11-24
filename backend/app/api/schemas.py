@@ -37,9 +37,26 @@ class PersonCreate(BaseModel):
         max_length=100,
     )
 
+    date_of_birth: Optional[str] = Field(
+        default=None,
+        max_length=50,
+    )
+
     contact_number: Optional[str] = Field(
         default=None,
         max_length=30,
+    )
+
+    validity: Optional[str] = Field(
+        default=None,
+        max_length=100,
+    )
+
+    face_image: Optional[str] = None
+
+    source_filename: Optional[str] = Field(
+        default=None,
+        max_length=255,
     )
 
     consent_status: bool = False
@@ -63,9 +80,13 @@ class PersonResponse(BaseModel):
 
     branch: Optional[str] = None
 
+    date_of_birth: Optional[str] = None
+
     contact_number: Optional[str] = None
 
-    face_embedding: Optional[str] = None
+    validity: Optional[str] = None
+
+    face_image: Optional[str] = None
 
     consent_status: bool
 
@@ -111,6 +132,14 @@ class RecognitionMatch(BaseModel):
 
     year: Optional[str] = None
 
+    date_of_birth: Optional[str] = None
+
+    contact_number: Optional[str] = None
+
+    validity: Optional[str] = None
+
+    face_image: Optional[str] = None
+
     confidence: float
 
     matched: bool
@@ -137,6 +166,8 @@ class RecognitionResponse(BaseModel):
     face_count: int = 0
 
     camera_id: str
+
+    box: Optional[dict[str, int]] = None
 
 
 # ============================================================

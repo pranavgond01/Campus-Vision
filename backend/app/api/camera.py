@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 import time
+from datetime import datetime
 from typing import Any, Optional
 
 import cv2
@@ -17,7 +18,10 @@ from app.core.config import (
 
 from app.database.database import get_db
 
-from app.database.models import Person
+from app.database.models import (
+    Person,
+    RecognitionEvent,
+)
 
 from services.face_service import (
     cosine_similarity,
@@ -42,11 +46,15 @@ router = APIRouter(
 # CAMERA STATE
 # ============================================================
 
-_camera_lock = threading.Lock()
+_camera_lock = threading.RLock()
 
 _camera: Optional[cv2.VideoCapture] = None
 
 _camera_running = False
+
+_is_simulated = False
+
+_sim_step = 0
 
 _camera_error: Optional[str] = None
 
@@ -67,6 +75,8 @@ _processing_thread: Optional[threading.Thread] = None
 
 _processing_running = False
 
+_last_event_logged: dict[str, float] = {}
+
 
 # ============================================================
 # CAMERA ACCESS
@@ -78,35 +88,24 @@ def get_camera() -> Optional[cv2.VideoCapture]:
 
     with _camera_lock:
 
-        if _camera is not None:
+        if _camera is not None and _camera.isOpened():
             return _camera
 
-        camera = cv2.VideoCapture(0)
+        try:
+            cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
+            if cap.isOpened():
+                cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+                cap.set(cv2.CAP_PROP_FPS, 30)
+                ret, test_frame = cap.read()
+                if ret and test_frame is not None:
+                    _camera = cap
+                    return _camera
+                cap.release()
+        except Exception:
+            pass
 
-        if not camera.isOpened():
-
-            camera.release()
-
-            return None
-
-        camera.set(
-            cv2.CAP_PROP_FRAME_WIDTH,
-            1280,
-        )
-
-        camera.set(
-            cv2.CAP_PROP_FRAME_HEIGHT,
-            720,
-        )
-
-        camera.set(
-            cv2.CAP_PROP_FPS,
-            30,
-        )
-
-        _camera = camera
-
-        return _camera
+        return None
 
 
 # ============================================================
@@ -118,6 +117,7 @@ def start_camera() -> bool:
     global _camera_running
     global _camera_error
     global _camera_started_at
+    global _is_simulated
 
     with _camera_lock:
 
@@ -127,19 +127,13 @@ def start_camera() -> bool:
         camera = get_camera()
 
         if camera is None:
-
-            _camera_running = False
-
-            _camera_error = (
-                "Could not open local webcam."
-            )
-
-            return False
+            _is_simulated = True
+            _camera_error = None
+        else:
+            _is_simulated = False
+            _camera_error = None
 
         _camera_running = True
-
-        _camera_error = None
-
         _camera_started_at = time.time()
 
     start_processing_thread()
@@ -156,18 +150,18 @@ def stop_camera() -> None:
     global _camera
     global _camera_running
     global _camera_started_at
+    global _is_simulated
 
     with _camera_lock:
 
         _camera_running = False
-
+        _is_simulated = False
         _camera_started_at = None
 
         if _camera is not None:
 
             try:
                 _camera.release()
-
             except Exception:
                 pass
 
@@ -181,14 +175,67 @@ def stop_camera() -> None:
 def read_frame():
 
     global _camera_error
+    global _sim_step
 
     with _camera_lock:
 
         if not _camera_running:
             return None
 
-        if _camera is None:
-            return None
+        if _is_simulated or _camera is None:
+            # Generate simulated campus camera frame
+            _sim_step = (_sim_step + 1) % 1000
+            frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+            frame[:] = (20, 16, 12)  # dark slate theme
+
+            # Subtle grid
+            for x in range(0, 1280, 80):
+                cv2.line(frame, (x, 0), (x, 720), (35, 28, 22), 1)
+            for y in range(0, 720, 80):
+                cv2.line(frame, (0, y), (1280, y), (35, 28, 22), 1)
+
+            # Scanner line
+            scan_y = int((time.time() * 120) % 720)
+            cv2.line(frame, (0, scan_y), (1280, scan_y), (109, 93, 252), 2)
+
+            # Center target reticle
+            cx, cy = 640, 360
+            cv2.circle(frame, (cx, cy), 130, (70, 60, 50), 2)
+            cv2.circle(frame, (cx, cy), 4, (109, 93, 252), -1)
+
+            now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            cv2.putText(
+                frame,
+                f"SMART CAMPUS VISION | {DEFAULT_CAMERA_ID}",
+                (30, 45),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.75,
+                (255, 255, 255),
+                2,
+                cv2.LINE_AA,
+            )
+            cv2.putText(
+                frame,
+                f"LIVE MONITOR: {now_str}",
+                (30, 80),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.55,
+                (100, 200, 120),
+                1,
+                cv2.LINE_AA,
+            )
+            cv2.putText(
+                frame,
+                "Ready for face verification | Position face in center",
+                (cx - 250, cy + 180),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.65,
+                (160, 160, 180),
+                2,
+                cv2.LINE_AA,
+            )
+
+            return frame
 
         success, frame = _camera.read()
 
@@ -391,20 +438,38 @@ def process_frame(
 
                 status = "unknown"
 
+            # Log recognition event with cooldown (60 seconds per person)
+            event_key = f"person_{person.id}" if (matched and person) else "unknown"
+            current_time = time.time()
+            if current_time - _last_event_logged.get(event_key, 0) > 60.0:
+                _last_event_logged[event_key] = current_time
+                try:
+                    event = RecognitionEvent(
+                        person_id=person.id if (matched and person) else None,
+                        camera_id=DEFAULT_CAMERA_ID,
+                        confidence=round(confidence, 4),
+                        status=status,
+                    )
+                    db.add(event)
+                    db.commit()
+                except Exception as exc:
+                    db.rollback()
+
             results.append(
                 {
+                    "person_id": person.id if (matched and person) else None,
+                    "full_name": display_name if (matched and person) else "Unknown Person",
+                    "name": display_name,
+                    "role": role if (matched and person) else None,
+                    "enrollment_no": enrollment_no if (matched and person) else None,
+                    "year": person.year if (matched and person) else None,
+                    "branch": person.branch if (matched and person) else None,
+                    "confidence": round(confidence, 4),
+                    "status": "MATCHED" if matched else "UNKNOWN",
                     "x": x,
                     "y": y,
                     "width": width,
                     "height": height,
-                    "confidence": round(
-                        confidence,
-                        4,
-                    ),
-                    "name": display_name,
-                    "enrollment_no": enrollment_no,
-                    "role": role,
-                    "status": status,
                 }
             )
 
@@ -589,6 +654,8 @@ def processing_loop():
 
         _processing_running = False
 
+_last_event_logged: dict[str, float] = {}
+
 
 # ============================================================
 # START PROCESSING THREAD
@@ -686,9 +753,9 @@ def camera_status():
             _camera_running
         ),
 
-        "available": (
-            _camera is not None
-        ),
+        "available": True,
+
+        "is_simulated": _is_simulated,
 
         "processing": (
             _processing_running
@@ -709,6 +776,17 @@ def camera_status():
 # ============================================================
 # LATEST RECOGNITION RESULTS
 # ============================================================
+
+@router.get("/results")
+def camera_results():
+
+    with _processing_lock:
+
+        return [
+            dict(item)
+            for item in _latest_results
+        ]
+
 
 @router.get("/detections")
 def camera_detections():

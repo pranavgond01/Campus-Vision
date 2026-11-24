@@ -38,8 +38,10 @@ from app.database.models import (
 from services.face_service import (
     base64_to_image,
     bytes_to_feature,
+    bytes_to_features,
     cosine_similarity,
     extract_feature,
+    FACE_RECOGNIZER,
 )
 
 from .schemas import (
@@ -63,7 +65,7 @@ REALTIME_MAX_WIDTH = 960
 
 REALTIME_EVENT_COOLDOWN = 10.0
 
-REALTIME_MIN_DETECTION_CONFIDENCE = 0.60
+REALTIME_MIN_DETECTION_CONFIDENCE = 0.65
 
 REALTIME_FRAME_INTERVAL = 0.10
 
@@ -153,7 +155,7 @@ def detect_faces(
             face[-1]
         )
 
-        if w <= 0 or h <= 0:
+        if w < 50 or h < 50:
             continue
 
         if (
@@ -193,6 +195,7 @@ def detect_faces(
                 "height": h,
                 "confidence": confidence,
                 "landmarks": face[4:14],
+                "raw_face": face,
             }
         )
 
@@ -330,18 +333,19 @@ def find_best_match(
             continue
 
         try:
-
-            stored_feature = (
-                bytes_to_feature(
-                    person.face_embedding
-                )
+            person_features = bytes_to_features(
+                person.face_embedding
             )
 
-            similarity = (
+            if not person_features:
+                continue
+
+            similarity = max(
                 cosine_similarity(
                     feature,
-                    stored_feature,
+                    stored_f,
                 )
+                for stored_f in person_features
             )
 
         except Exception:
@@ -397,39 +401,52 @@ def recognize_single_face(
     people: list[Person],
 ) -> FaceRecognitionResult | None:
 
-    face_crop = crop_face(
-        image,
-        face,
-    )
+    feature = None
 
-    if face_crop is None:
-        return None
+    # 1. Prefer landmark alignCrop for canonical 112x112 frontal alignment
+    if "raw_face" in face and FACE_RECOGNIZER is not None:
+        try:
+            aligned = FACE_RECOGNIZER.alignCrop(
+                image,
+                face["raw_face"],
+            )
+            if aligned is not None and aligned.size > 0:
+                feature = extract_feature(aligned)
+        except Exception:
+            feature = None
 
-    try:
-
-        feature = extract_feature(
-            face_crop
+    # 2. Fallback to bounding box crop if alignCrop fails
+    if feature is None:
+        face_crop = crop_face(
+            image,
+            face,
         )
 
-    except Exception:
+        if face_crop is None:
+            return None
 
-        return FaceRecognitionResult(
-            x=face["x"],
-            y=face["y"],
-            width=face["width"],
-            height=face["height"],
-            detector_confidence=round(
-                float(
-                    face["confidence"]
+        try:
+            feature = extract_feature(
+                face_crop
+            )
+        except Exception:
+            return FaceRecognitionResult(
+                x=face["x"],
+                y=face["y"],
+                width=face["width"],
+                height=face["height"],
+                detector_confidence=round(
+                    float(
+                        face["confidence"]
+                    ),
+                    4,
                 ),
-                4,
-            ),
-            recognition_confidence=0.0,
-            matched=False,
-            label="UNKNOWN",
-            enrollment_no=None,
-            person_id=None,
-        )
+                recognition_confidence=0.0,
+                matched=False,
+                label="UNKNOWN",
+                enrollment_no=None,
+                person_id=None,
+            )
 
     best_person = None
 
@@ -542,44 +559,62 @@ class RecognitionEventLogger:
 
     def __init__(
         self,
-        cooldown: float = REALTIME_EVENT_COOLDOWN,
+        cooldown: float = 90.0,
     ):
-
         self.cooldown = cooldown
+        self.last_logged: dict[str, float] = {}
+        self.last_matched_at: dict[str, float] = {}
 
-        self.last_logged: dict[
-            str,
-            float,
-        ] = {}
+    def should_log_matched(
+        self,
+        camera_id: str,
+        person_id: int,
+    ) -> bool:
+        key = f"{camera_id}:person_{person_id}"
+        now = time.monotonic()
+        previous = self.last_logged.get(key, 0.0)
+
+        # Record that a verified person is active at this camera
+        self.last_matched_at[camera_id] = now
+
+        if now - previous < self.cooldown:
+            return False
+
+        self.last_logged[key] = now
+        return True
+
+    def should_log_unknown(
+        self,
+        camera_id: str,
+    ) -> bool:
+        now = time.monotonic()
+
+        # If a verified person was at this camera within cooldown, suppress unknown logs
+        if now - self.last_matched_at.get(camera_id, 0.0) < self.cooldown:
+            return False
+
+        key = f"{camera_id}:unknown"
+        previous = self.last_logged.get(key, 0.0)
+
+        # Log unknown at most once every 120 seconds per camera
+        if now - previous < 120.0:
+            return False
+
+        self.last_logged[key] = now
+        return True
 
     def should_log(
         self,
         camera_id: str,
         person_key: str,
     ) -> bool:
-
-        key = (
-            f"{camera_id}:{person_key}"
-        )
-
-        now = time.monotonic()
-
-        previous = (
-            self.last_logged.get(
-                key,
-                0.0,
-            )
-        )
-
-        if (
-            now - previous
-            < self.cooldown
-        ):
-            return False
-
-        self.last_logged[key] = now
-
-        return True
+        if person_key.startswith("person_"):
+            try:
+                pid = int(person_key.split("_")[1])
+                return self.should_log_matched(camera_id, pid)
+            except Exception:
+                pass
+        return self.should_log_unknown(camera_id)
 
     def clear_expired(self):
 
@@ -806,6 +841,9 @@ def recognize_frame(
 # STANDARD POST RECOGNITION
 # ============================================================
 
+GLOBAL_EVENT_LOGGER = RecognitionEventLogger(cooldown=60.0)
+
+
 @router.post(
     "",
     response_model=RecognitionResponse,
@@ -905,18 +943,22 @@ def recognize_face(
 
     if result.matched:
 
-        event = RecognitionEvent(
-            person_id=result.person_id,
-            camera_id=camera_id,
-            confidence=(
-                result.recognition_confidence
-            ),
-            status="recognized",
-        )
+        person_key = f"person_{result.person_id}"
 
-        db.add(event)
+        if GLOBAL_EVENT_LOGGER.should_log(camera_id, person_key):
 
-        db.commit()
+            event = RecognitionEvent(
+                person_id=result.person_id,
+                camera_id=camera_id,
+                confidence=(
+                    result.recognition_confidence
+                ),
+                status="recognized",
+            )
+
+            db.add(event)
+
+            db.commit()
 
         person = next(
             (
@@ -950,6 +992,10 @@ def recognize_face(
                 role=person.role,
                 branch=person.branch,
                 year=person.year,
+                date_of_birth=person.date_of_birth,
+                contact_number=person.contact_number,
+                validity=person.validity,
+                face_image=person.face_image,
                 confidence=round(
                     result.recognition_confidence,
                     4,
@@ -972,24 +1018,34 @@ def recognize_face(
             person=person_response,
             face_count=len(faces),
             camera_id=camera_id,
+            box={
+                "x": result.x,
+                "y": result.y,
+                "width": result.width,
+                "height": result.height,
+            },
         )
 
     # --------------------------------------------------------
     # Unknown
     # --------------------------------------------------------
 
-    event = RecognitionEvent(
-        person_id=None,
-        camera_id=camera_id,
-        confidence=(
-            result.recognition_confidence
-        ),
-        status="unknown",
-    )
+    person_key = "unknown"
 
-    db.add(event)
+    if GLOBAL_EVENT_LOGGER.should_log(camera_id, person_key):
 
-    db.commit()
+        event = RecognitionEvent(
+            person_id=None,
+            camera_id=camera_id,
+            confidence=(
+                result.recognition_confidence
+            ),
+            status="unknown",
+        )
+
+        db.add(event)
+
+        db.commit()
 
     return RecognitionResponse(
         success=True,
@@ -1006,6 +1062,12 @@ def recognize_face(
         person=None,
         face_count=len(faces),
         camera_id=camera_id,
+        box={
+            "x": result.x,
+            "y": result.y,
+            "width": result.width,
+            "height": result.height,
+        },
     )
 
 
@@ -1162,6 +1224,61 @@ async def realtime_recognition(
     finally:
 
         db.close()
+
+
+# ============================================================
+# EVENTS
+# ============================================================
+
+@router.get("/events")
+def get_recognition_events(
+    limit: int = 100,
+    db: Session = Depends(get_db),
+):
+
+    events = (
+        db.query(RecognitionEvent)
+        .order_by(RecognitionEvent.timestamp.desc())
+        .limit(limit)
+        .all()
+    )
+
+    result = []
+    for event in events:
+        person_info = None
+        if event.person_id:
+            person = (
+                db.query(Person)
+                .filter(Person.id == event.person_id)
+                .first()
+            )
+            if person:
+                person_info = {
+                    "id": person.id,
+                    "full_name": person.full_name,
+                    "role": person.role,
+                    "enrollment_no": person.enrollment_no,
+                    "branch": person.branch,
+                    "year": person.year,
+                }
+
+        result.append(
+            {
+                "id": event.id,
+                "person_id": event.person_id,
+                "camera_id": event.camera_id,
+                "confidence": round(event.confidence, 4),
+                "status": event.status,
+                "timestamp": (
+                    event.timestamp.isoformat()
+                    if event.timestamp
+                    else None
+                ),
+                "person": person_info,
+            }
+        )
+
+    return result
 
 
 # ============================================================

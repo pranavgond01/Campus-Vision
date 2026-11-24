@@ -12,6 +12,19 @@
   --danger: #ef4444;
 }
 
+html[data-theme="light"],
+html.light {
+  --background: #f8fafc;
+  --foreground: #0f172a;
+  --muted: #64748b;
+  --panel: #ffffff;
+  --panel-light: #f1f5f9;
+  --border: #e2e8f0;
+  --primary: #6d5dfc;
+  --success: #16a34a;
+  --danger: #dc2626;
+}
+
 * {
   box-sizing: border-box;
 }
@@ -39,11 +52,13 @@ body {
     Arial,
     Helvetica,
     sans-serif;
+  transition: background-color 0.2s ease, color 0.2s ease;
 }
 
 button,
 input,
-select {
+select,
+textarea {
   font: inherit;
 }
 
@@ -52,7 +67,7 @@ select {
 }
 
 ::-webkit-scrollbar-track {
-  background: #07090f;
+  background: var(--background);
 }
 
 ::-webkit-scrollbar-thumb {
@@ -62,4 +77,129 @@ select {
 
 ::-webkit-scrollbar-thumb:hover {
   background: #343b4d;
+}
+
+/* ============================================================
+   LIGHT / WHITE THEME OVERRIDES
+   ============================================================ */
+
+html.light body,
+html[data-theme="light"] body {
+  background:
+    radial-gradient(
+      circle at 15% 0%,
+      rgba(109, 93, 252, 0.05),
+      transparent 30%
+    ),
+    #f8fafc !important;
+  color: #0f172a !important;
+}
+
+/* Backgrounds */
+html.light .bg-\[\#07090f\],
+html.light .bg-\[\#07090f\]\/80,
+html.light .bg-\[\#07090f\]\/95,
+html.light .bg-\[\#090c14\],
+html.light .bg-\[\#090c14\]\/95,
+html.light .bg-\[\#0a0d14\],
+html.light .bg-\[\#090d14\] {
+  background-color: #ffffff !important;
+}
+
+html.light .bg-\[\#0d111b\] {
+  background-color: #ffffff !important;
+  box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.06), 0 1px 2px -1px rgba(0, 0, 0, 0.04) !important;
+}
+
+html.light .bg-\[\#111724\],
+html.light .bg-\[\#111726\],
+html.light .bg-\[\#0c101a\],
+html.light .bg-\[\#141a29\] {
+  background-color: #f1f5f9 !important;
+}
+
+html.light .bg-white\/\[0\.015\],
+html.light .bg-white\/\[0\.02\],
+html.light .bg-white\/\[0\.025\],
+html.light .bg-white\/\[0\.03\],
+html.light .bg-white\/\[0\.04\],
+html.light .bg-white\/\[0\.05\],
+html.light .bg-white\/\[0\.06\],
+html.light .bg-white\/\[0\.08\] {
+  background-color: #f8fafc !important;
+}
+
+html.light .hover\:bg-white\/\[0\.04\]:hover,
+html.light .hover\:bg-white\/\[0\.05\]:hover,
+html.light .hover\:bg-white\/\[0\.06\]:hover,
+html.light .hover\:bg-white\/\[0\.07\]:hover,
+html.light .hover\:bg-white\/\[0\.08\]:hover,
+html.light .hover\:bg-white\/\[0\.1\]:hover {
+  background-color: #e2e8f0 !important;
+}
+
+/* Borders */
+html.light .border-white\/\[0\.06\],
+html.light .border-white\/\[0\.07\],
+html.light .border-white\/\[0\.08\],
+html.light .border-white\/\[0\.1\],
+html.light .border-white\/\[0\.12\],
+html.light .border-white\/\[0\.15\] {
+  border-color: #e2e8f0 !important;
+}
+
+/* Headings and primary text */
+html.light .text-white {
+  color: #0f172a !important;
+}
+
+html.light h1,
+html.light h2,
+html.light h3,
+html.light h4,
+html.light h5,
+html.light h6 {
+  color: #0f172a !important;
+}
+
+/* Secondary / muted text */
+html.light .text-\[\#8b93a7\],
+html.light .text-\[\#747c90\],
+html.light .text-\[\#6f778b\],
+html.light .text-\[\#9299aa\],
+html.light .text-\[\#717a8e\],
+html.light .text-\[\#687186\],
+html.light .text-\[\#626a7e\],
+html.light .text-\[\#bcc2d4\],
+html.light .text-\[\#aab0bf\],
+html.light .text-\[\#8a92a6\] {
+  color: #64748b !important;
+}
+
+/* Inputs and Selects */
+html.light input:not([type="checkbox"]):not([type="radio"]),
+html.light select,
+html.light textarea {
+  background-color: #ffffff !important;
+  color: #0f172a !important;
+  border-color: #cbd5e1 !important;
+}
+
+html.light input::placeholder,
+html.light textarea::placeholder {
+  color: #94a3b8 !important;
+}
+
+/* Light scrollbar */
+html.light ::-webkit-scrollbar-track {
+  background: #f1f5f9;
+}
+
+html.light ::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 20px;
+}
+
+html.light ::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
 }

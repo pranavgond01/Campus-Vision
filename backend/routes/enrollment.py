@@ -26,6 +26,13 @@ from services.id_card_service import (
     parse_id_cards,
 )
 
+from database.database import (
+    get_person_by_enrollment,
+    create_person,
+    list_people,
+    get_person,
+)
+
 
 router = APIRouter(
     prefix="/api/enrollment",

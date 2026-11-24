@@ -4,10 +4,11 @@ import {
   Bell,
   ShieldCheck,
 } from "lucide-react";
+import ThemeToggle from "./ThemeToggle";
 
 export default function Topbar() {
   return (
-    <header className="sticky top-0 z-30 flex h-20 items-center justify-between border-b border-white/[0.07] bg-[#07090f]/80 px-8 backdrop-blur-xl">
+    <header className="sticky top-0 z-30 flex h-20 items-center justify-between border-b border-white/[0.07] bg-[#07090f]/80 px-8 backdrop-blur-xl transition-colors duration-200">
       <div>
         <h1 className="text-lg font-semibold">
           Campus Monitoring
@@ -18,7 +19,10 @@ export default function Topbar() {
         </p>
       </div>
 
-      <div className="flex items-center gap-4">
+      <div className="flex items-center gap-3">
+        {/* Theme Toggle: Dark / White */}
+        <ThemeToggle showLabel={true} />
+
         <div className="hidden items-center gap-2 rounded-full border border-[#22c55e]/15 bg-[#22c55e]/5 px-3 py-2 text-xs text-[#a8e9bd] sm:flex">
           <ShieldCheck size={14} />
 
@@ -31,7 +35,7 @@ export default function Topbar() {
           <span className="absolute right-2 top-2 h-1.5 w-1.5 rounded-full bg-[#6d5dfc]" />
         </button>
 
-        <div className="flex h-10 w-10 items-center justify-center rounded-full bg-gradient-to-br from-[#6d5dfc] to-[#9d72ff] text-sm font-bold">
+        <div className="flex h-10 w-10 items-center justify-center rounded-full bg-gradient-to-br from-[#6d5dfc] to-[#9d72ff] text-sm font-bold text-white shadow-sm">
           A
         </div>
       </div>

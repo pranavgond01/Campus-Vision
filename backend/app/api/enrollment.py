@@ -357,11 +357,13 @@ def confirm_enrollment(
 
         try:
 
+            from services.face_service import extract_face_embedding_from_image
+
             face_image = base64_to_image(
                 request.face_image
             )
 
-            feature = extract_feature(
+            feature = extract_face_embedding_from_image(
                 face_image
             )
 

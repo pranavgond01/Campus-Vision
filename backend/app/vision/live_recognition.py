@@ -89,8 +89,7 @@ class LiveRecognitionService:
                     == True
                 )
                 .filter(
-                    Person.face_embedding
-                    != ""
+                    Person.face_embedding.isnot(None)
                 )
                 .all()
             )

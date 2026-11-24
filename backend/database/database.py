@@ -5,9 +5,7 @@ from pathlib import Path
 from typing import Any
 
 
-PROJECT_ROOT = Path(
-    r"C:\SmartCampusVision"
-)
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 DATABASE_DIR = (
     PROJECT_ROOT

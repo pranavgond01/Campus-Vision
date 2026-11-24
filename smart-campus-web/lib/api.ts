@@ -9,7 +9,11 @@ export interface Person {
   enrollment_no: string | null;
   year: string | null;
   branch: string | null;
+  date_of_birth?: string | null;
   contact_number: string | null;
+  validity?: string | null;
+  face_image?: string | null;
+  source_filename?: string | null;
   consent_status: boolean;
   created_at: string;
 }
@@ -29,6 +33,10 @@ export interface RecognitionResult {
   enrollment_no: string | null;
   year: string | null;
   branch: string | null;
+  date_of_birth?: string | null;
+  contact_number?: string | null;
+  validity?: string | null;
+  face_image?: string | null;
   confidence: number;
   status: string;
 }
@@ -93,6 +101,80 @@ export async function getPeople() {
   );
 }
 
+export interface CreatePersonInput {
+  full_name: string;
+  role: string;
+  enrollment_no?: string | null;
+  year?: string | null;
+  branch?: string | null;
+  contact_number?: string | null;
+  face_image?: string | null;
+  consent_status?: boolean;
+}
+
+export async function createPerson(data: CreatePersonInput): Promise<Person> {
+  return request<Person>("/api/people", {
+    method: "POST",
+    body: JSON.stringify({
+      ...data,
+      consent_status: data.consent_status ?? true,
+    }),
+  });
+}
+
+export async function addFaceSample(
+  personId: number,
+  faceImage: string,
+): Promise<{ success: boolean; person_id: number; total_samples: number; message: string }> {
+  return request(`/api/people/${personId}/add-sample`, {
+    method: "POST",
+    body: JSON.stringify({ face_image: faceImage }),
+  });
+}
+
+export interface RecognitionApiResponse {
+  success: boolean;
+  detected: boolean;
+  matched: boolean;
+  message: string;
+  confidence?: number | null;
+  person?: {
+    person_id: number;
+    full_name: string;
+    enrollment_no?: string | null;
+    role: string;
+    branch?: string | null;
+    year?: string | null;
+    date_of_birth?: string | null;
+    contact_number?: string | null;
+    validity?: string | null;
+    face_image?: string | null;
+    confidence: number;
+    matched: boolean;
+  } | null;
+  face_count: number;
+  camera_id: string;
+  box?: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  } | null;
+}
+
+export async function recognizeFrame(
+  imageBase64: string,
+  cameraId: string = "LOCAL-CAMERA-01",
+): Promise<RecognitionApiResponse> {
+  return request<RecognitionApiResponse>("/api/recognition", {
+    method: "POST",
+    body: JSON.stringify({
+      image: imageBase64,
+      camera_id: cameraId,
+    }),
+  });
+}
+
 export async function getPerson(
   id: number,
 ) {
@@ -145,8 +227,25 @@ export async function getCameraResults() {
   );
 }
 
-export async function getRecognitionEvents() {
-  return request<any[]>(
+export interface RecognitionEventRecord {
+  id: number;
+  person_id: number | null;
+  camera_id: string;
+  confidence: number;
+  status: string;
+  timestamp: string | null;
+  person?: {
+    id: number;
+    full_name: string;
+    role: string;
+    enrollment_no: string | null;
+    branch: string | null;
+    year: string | null;
+  } | null;
+}
+
+export async function getRecognitionEvents(): Promise<RecognitionEventRecord[]> {
+  return request<RecognitionEventRecord[]>(
     "/api/recognition/events",
   );
 }
@@ -217,11 +316,13 @@ export interface IDCardData {
   branch: string | null;
   date_of_birth: string | null;
   contact_number: string | null;
-  address: string | null;
+  address?: string | null;
   validity: string | null;
   face_detected: boolean;
-  confidence: number;
-  photo: string | null;
+  face_count: number;
+  face_confidence: number | null;
+  face_image: string | null;
+  card_image?: string | null;
 }
 
 export interface IDCardResult {

@@ -12,38 +12,55 @@ import numpy as np
 import pymupdf
 import pytesseract
 
+try:
+    from rapidocr_onnxruntime import RapidOCR
+    RAPID_OCR_ENGINE = RapidOCR()
+    RAPID_OCR_AVAILABLE = True
+except Exception:
+    RAPID_OCR_ENGINE = None
+    RAPID_OCR_AVAILABLE = False
+
 from PIL import Image
 
+
+import shutil
 
 # ============================================================
 # CONFIGURATION
 # ============================================================
 
-TESSERACT_PATH = Path(
-    r"C:\Program Files\Tesseract-OCR\tesseract.exe"
-)
+BACKEND_DIR = Path(__file__).resolve().parent.parent
 
-if not TESSERACT_PATH.is_file():
-    raise RuntimeError(
-        "Tesseract OCR was not found at:\n"
-        f"{TESSERACT_PATH}\n\n"
-        "Install Tesseract 5.x or update TESSERACT_PATH."
+# Detect Tesseract OCR binary path gracefully
+TESSERACT_CANDIDATES = [
+    shutil.which("tesseract"),
+    r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+    r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
+    os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "Tesseract-OCR", "tesseract.exe"),
+]
+
+TESSERACT_AVAILABLE = False
+TESSERACT_PATH = None
+
+for candidate in TESSERACT_CANDIDATES:
+    if candidate and Path(candidate).is_file():
+        TESSERACT_PATH = Path(candidate)
+        pytesseract.pytesseract.tesseract_cmd = str(TESSERACT_PATH)
+        TESSERACT_AVAILABLE = True
+        break
+
+if not TESSERACT_AVAILABLE:
+    print(
+        "[INFO] Tesseract OCR not found. OCR-based text extraction will be skipped "
+        "until Tesseract 5.x is installed."
     )
 
-pytesseract.pytesseract.tesseract_cmd = str(
-    TESSERACT_PATH
-)
-
-
-# YuNet model.
-#
-# Put the model here:
-#
-# C:\SmartCampusVision\models\face_detection_yunet_2023mar.onnx
-#
-# If your existing model is somewhere else, change this path.
-YUNET_PATH = Path(
-    r"C:\SmartCampusVision\backend\models\yunet\face_detection_yunet_2023mar.onnx"
+# YuNet model path
+YUNET_PATH = (
+    BACKEND_DIR
+    / "models"
+    / "yunet"
+    / "face_detection_yunet_2023mar.onnx"
 )
 
 
@@ -287,20 +304,54 @@ def preprocess_for_ocr(
 # OCR
 # ============================================================
 
+def check_tesseract() -> bool:
+    global TESSERACT_AVAILABLE, TESSERACT_PATH
+    if TESSERACT_AVAILABLE and TESSERACT_PATH and Path(TESSERACT_PATH).is_file():
+        return True
+    for candidate in TESSERACT_CANDIDATES:
+        if candidate and Path(candidate).is_file():
+            TESSERACT_PATH = Path(candidate)
+            pytesseract.pytesseract.tesseract_cmd = str(TESSERACT_PATH)
+            TESSERACT_AVAILABLE = True
+            print(f"[OCR] Tesseract located at: {TESSERACT_PATH}")
+            return True
+    return False
+
+
 def run_ocr(
     image: np.ndarray,
 ) -> str:
+    # 1. Prefer RapidOCR (ONNX Runtime-based, highly accurate and doesn't require tesseract exe)
+    if RAPID_OCR_AVAILABLE and RAPID_OCR_ENGINE is not None:
+        try:
+            result, _ = RAPID_OCR_ENGINE(image)
+            if result:
+                lines = [
+                    item[1].replace("：", ": ").strip()
+                    for item in result
+                    if item and len(item) > 1 and item[1].strip()
+                ]
+                return "\n".join(lines)
+        except Exception as exc:
+            print(f"[WARNING] RapidOCR failed: {exc}")
+
+    # 2. Fallback to Tesseract if installed
+    if not check_tesseract():
+        return ""
 
     processed = preprocess_for_ocr(
         image
     )
 
-    text = pytesseract.image_to_string(
-        processed,
-        config=OCR_CONFIG,
-    )
-
-    return clean_text(text) or ""
+    try:
+        text = pytesseract.image_to_string(
+            processed,
+            config=OCR_CONFIG,
+        )
+        return clean_text(text) or ""
+    except Exception as exc:
+        print(f"[WARNING] OCR failed: {exc}")
+        return ""
 
 
 # ============================================================
@@ -584,7 +635,7 @@ def extract_validity(
 ) -> str | None:
 
     match = re.search(
-        r"VALIDITY\s*[:\-]?\s*(.+)",
+        r"VALIDI[TF]Y\s*[:\-]?\s*(.+)",
         text,
         flags=re.IGNORECASE,
     )
@@ -806,10 +857,46 @@ def image_to_base64(
 # SINGLE CARD PROCESSING
 # ============================================================
 
+def get_best_orientation(image: np.ndarray) -> tuple[np.ndarray, list[dict[str, Any]]]:
+    """
+    Checks 0, 90 CW, 180, and 270 CCW rotations.
+    Returns the rotated image that yields the highest face detection confidence.
+    """
+    rotations = [
+        (0, None),
+        (90, cv2.ROTATE_90_CLOCKWISE),
+        (180, cv2.ROTATE_180),
+        (270, cv2.ROTATE_90_COUNTERCLOCKWISE)
+    ]
+    best_image = image
+    best_faces: list[dict[str, Any]] = []
+    best_score = -1.0
+
+    for deg, code in rotations:
+        rotated = cv2.rotate(image, code) if code is not None else image
+        faces = detect_faces(rotated)
+        if faces:
+            max_conf = max(f["confidence"] for f in faces)
+            if max_conf > best_score:
+                best_score = max_conf
+                best_image = rotated
+                best_faces = faces
+
+    if not best_faces:
+        best_faces = detect_faces(image)
+
+    return best_image, best_faces
+
+
 def process_card_image(
     image: np.ndarray,
     page_number: int = 1,
 ) -> dict[str, Any]:
+
+    # --------------------------------------------------------
+    # Auto-Orientation Detection
+    # --------------------------------------------------------
+    image, faces = get_best_orientation(image)
 
     # --------------------------------------------------------
     # OCR
@@ -862,12 +949,8 @@ def process_card_image(
     )
 
     # --------------------------------------------------------
-    # Face detection
+    # Face extraction
     # --------------------------------------------------------
-
-    faces = detect_faces(
-        image
-    )
 
     face_image = None
 
@@ -925,6 +1008,7 @@ def process_card_image(
             ),
 
             "face_image": face_image,
+            "card_image": image_to_base64(image),
         },
 
         # Keep OCR visible during development.

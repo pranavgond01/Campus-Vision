@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  useCallback,
   useEffect,
   useState,
 } from "react";
@@ -11,6 +12,7 @@ import {
   UserRound,
   GraduationCap,
   RefreshCw,
+  Eye,
 } from "lucide-react";
 
 import {
@@ -18,10 +20,14 @@ import {
   getPeople,
   Person,
 } from "@/lib/api";
+import PersonDetailsModal from "@/components/PersonDetailsModal";
 
 export default function PeoplePage() {
   const [people, setPeople] =
     useState<Person[]>([]);
+
+  const [selectedPerson, setSelectedPerson] =
+    useState<Person | null>(null);
 
   const [search, setSearch] =
     useState("");
@@ -32,14 +38,13 @@ export default function PeoplePage() {
   const [message, setMessage] =
     useState("");
 
-  async function loadPeople() {
+  const loadPeople = useCallback(async () => {
     try {
-      setLoading(true);
-
       const data =
         await getPeople();
 
       setPeople(data);
+      setMessage("");
     } catch (error) {
       setMessage(
         error instanceof Error
@@ -49,7 +54,7 @@ export default function PeoplePage() {
     } finally {
       setLoading(false);
     }
-  }
+  }, []);
 
   async function handleDelete(
     id: number,
@@ -65,6 +70,7 @@ export default function PeoplePage() {
     }
 
     try {
+      setLoading(true);
       await deletePerson(id);
 
       await loadPeople();
@@ -74,12 +80,14 @@ export default function PeoplePage() {
           ? error.message
           : "Delete failed.",
       );
+    } finally {
+      setLoading(false);
     }
   }
 
   useEffect(() => {
     loadPeople();
-  }, []);
+  }, [loadPeople]);
 
   const filtered =
     people.filter((person) => {
@@ -221,32 +229,34 @@ export default function PeoplePage() {
                   (person) => (
                     <tr
                       key={person.id}
-                      className="border-b border-white/[0.04] transition hover:bg-white/[0.015]"
+                      onClick={() => setSelectedPerson(person)}
+                      className="border-b border-white/[0.04] transition hover:bg-white/[0.03] cursor-pointer group"
                     >
                       <td className="px-5 py-4">
                         <div className="flex items-center gap-3">
-                          <div className="flex h-9 w-9 items-center justify-center rounded-full bg-[#6d5dfc]/10 text-[#9185ff]">
-                            {person.role ===
-                            "teacher" ? (
-                              <UserRound
-                                size={16}
+                          <div className="relative flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-white/[0.08] bg-[#6d5dfc]/10 text-[#9185ff]">
+                            {person.face_image ? (
+                              <img
+                                src={person.face_image}
+                                alt={person.full_name}
+                                className="h-full w-full object-cover"
                               />
+                            ) : person.role === "teacher" ? (
+                              <UserRound size={16} />
                             ) : (
-                              <GraduationCap
-                                size={17}
-                              />
+                              <GraduationCap size={17} />
                             )}
                           </div>
 
                           <div>
-                            <div className="text-sm font-medium">
+                            <div className="text-sm font-semibold text-white group-hover:text-[#a69eff] transition-colors">
                               {
                                 person.full_name
                               }
                             </div>
 
                             <div className="mt-0.5 text-xs text-[#626a7e]">
-                              ID #{person.id}
+                              ID #{person.id} • Click for ID Card
                             </div>
                           </div>
                         </div>
@@ -286,19 +296,30 @@ export default function PeoplePage() {
                       </td>
 
                       <td className="px-5 py-4">
-                        <button
-                          onClick={() =>
-                            handleDelete(
-                              person.id,
-                              person.full_name,
-                            )
-                          }
-                          className="flex h-8 w-8 items-center justify-center rounded-lg text-[#626a7e] transition hover:bg-[#ef4444]/10 hover:text-[#f87171]"
-                        >
-                          <Trash2
-                            size={15}
-                          />
-                        </button>
+                        <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+                          <button
+                            onClick={() => setSelectedPerson(person)}
+                            title="View Full ID Card Details"
+                            className="flex h-8 w-8 items-center justify-center rounded-lg text-[#8b93a7] transition hover:bg-[#6d5dfc]/15 hover:text-[#a69eff]"
+                          >
+                            <Eye size={15} />
+                          </button>
+
+                          <button
+                            onClick={() =>
+                              handleDelete(
+                                person.id,
+                                person.full_name,
+                              )
+                            }
+                            title="Delete"
+                            className="flex h-8 w-8 items-center justify-center rounded-lg text-[#626a7e] transition hover:bg-[#ef4444]/10 hover:text-[#f87171]"
+                          >
+                            <Trash2
+                              size={15}
+                            />
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   ),
@@ -308,6 +329,16 @@ export default function PeoplePage() {
           </table>
         </div>
       </div>
+
+      {/* ID Card Profile Details Modal */}
+      <PersonDetailsModal
+        person={selectedPerson}
+        onClose={() => setSelectedPerson(null)}
+        onDelete={(id, name) => {
+          setSelectedPerson(null);
+          handleDelete(id, name);
+        }}
+      />
     </div>
   );
 }

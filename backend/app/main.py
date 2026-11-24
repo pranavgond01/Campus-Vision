@@ -30,6 +30,14 @@ from app.api.statistics import (
     router as statistics_router,
 )
 
+from routes.pdf_import import (
+    router as pdf_import_router,
+)
+
+from routes.id_card_import import (
+    router as id_card_router,
+)
+
 
 # ============================================================
 # STARTUP
@@ -92,7 +100,13 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:3000",
         "http://127.0.0.1:3000",
+        "http://localhost:3001",
+        "http://127.0.0.1:3001",
+        "http://localhost:3002",
+        "http://127.0.0.1:3002",
     ],
+
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
 
     allow_credentials=True,
 
@@ -124,6 +138,14 @@ app.include_router(
 
 app.include_router(
     statistics_router
+)
+
+app.include_router(
+    pdf_import_router
+)
+
+app.include_router(
+    id_card_router
 )
 
 

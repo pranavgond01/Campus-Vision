@@ -1,3 +1,5 @@
+from pydantic import BaseModel
+
 from fastapi import (
     APIRouter,
     Depends,
@@ -74,8 +76,21 @@ def create_person(
     )
 
 
-    if enrollment_no:
+    face_embedding = None
+    if person_data.face_image:
+        try:
+            from services.face_service import (
+                base64_to_image,
+                extract_face_embedding_from_image,
+                feature_to_bytes,
+            )
+            img = base64_to_image(person_data.face_image)
+            feature = extract_face_embedding_from_image(img)
+            face_embedding = feature_to_bytes(feature)
+        except Exception as exc:
+            print(f"[PEOPLE] Embedding extraction error: {exc}")
 
+    if enrollment_no:
         existing = (
             db.query(Person)
             .filter(
@@ -86,51 +101,49 @@ def create_person(
         )
 
         if existing:
-
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    "Enrollment number "
-                    "already exists."
-                ),
-            )
-
+            # Seamlessly update existing person record & face biometric
+            existing.full_name = full_name
+            existing.role = role
+            if person_data.year:
+                existing.year = person_data.year
+            if person_data.branch:
+                existing.branch = person_data.branch
+            if person_data.date_of_birth:
+                existing.date_of_birth = person_data.date_of_birth
+            if person_data.contact_number:
+                existing.contact_number = person_data.contact_number
+            if person_data.validity:
+                existing.validity = person_data.validity
+            if person_data.face_image:
+                existing.face_image = person_data.face_image
+            if face_embedding is not None:
+                if existing.face_embedding:
+                    from services.face_service import bytes_to_features, bytes_to_feature, cosine_similarity
+                    existing_feats = bytes_to_features(existing.face_embedding)
+                    new_feat = bytes_to_feature(face_embedding)
+                    if not any(cosine_similarity(new_feat, f) > 0.96 for f in existing_feats) and len(existing_feats) < 4:
+                        existing.face_embedding = existing.face_embedding + face_embedding
+                    else:
+                        existing.face_embedding = face_embedding
+                else:
+                    existing.face_embedding = face_embedding
+            db.commit()
+            db.refresh(existing)
+            return existing
 
     person = Person(
-
         full_name=full_name,
-
         role=role,
-
         enrollment_no=enrollment_no,
-
         year=person_data.year,
-
         branch=person_data.branch,
-
-        date_of_birth=(
-            person_data.date_of_birth
-        ),
-
-        contact_number=(
-            person_data.contact_number
-        ),
-
-        validity=(
-            person_data.validity
-        ),
-
-        face_image=(
-            person_data.face_image
-        ),
-
-        source_filename=(
-            person_data.source_filename
-        ),
-
-        consent_status=(
-            person_data.consent_status
-        ),
+        date_of_birth=person_data.date_of_birth,
+        contact_number=person_data.contact_number,
+        validity=person_data.validity,
+        face_embedding=face_embedding,
+        face_image=person_data.face_image,
+        source_filename=person_data.source_filename,
+        consent_status=person_data.consent_status,
     )
 
 
@@ -238,3 +251,70 @@ def delete_person(
             "Person deleted successfully."
         ),
     }
+
+
+# ============================================================
+# ADD FACE SAMPLE (MULTI-EMBEDDING / WEBCAM ENRICHMENT)
+# ============================================================
+
+class AddFaceSampleRequest(BaseModel):
+    face_image: str
+
+
+@router.post(
+    "/{person_id}/add-sample",
+)
+def add_face_sample(
+    person_id: int,
+    payload: AddFaceSampleRequest,
+    db: Session = Depends(get_db),
+):
+    person = (
+        db.query(Person)
+        .filter(Person.id == person_id)
+        .first()
+    )
+
+    if not person:
+        raise HTTPException(
+            status_code=404,
+            detail="Person not found.",
+        )
+
+    try:
+        from services.face_service import (
+            base64_to_image,
+            extract_face_embedding_from_image,
+            feature_to_bytes,
+            bytes_to_features,
+            bytes_to_feature,
+            cosine_similarity,
+        )
+
+        img = base64_to_image(payload.face_image)
+        new_feat = extract_face_embedding_from_image(img)
+        new_bytes = feature_to_bytes(new_feat)
+
+        if person.face_embedding:
+            existing_feats = bytes_to_features(person.face_embedding)
+            # Add if sufficiently distinct (< 0.96) and under 5 samples max
+            if not any(cosine_similarity(new_feat, f) > 0.96 for f in existing_feats) and len(existing_feats) < 5:
+                person.face_embedding = person.face_embedding + new_bytes
+        else:
+            person.face_embedding = new_bytes
+
+        db.commit()
+        db.refresh(person)
+
+        total_samples = len(bytes_to_features(person.face_embedding))
+        return {
+            "success": True,
+            "person_id": person.id,
+            "total_samples": total_samples,
+            "message": f"Face sample registered. Total biometric samples: {total_samples}",
+        }
+    except Exception as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Failed to process face sample: {exc}",
+        )

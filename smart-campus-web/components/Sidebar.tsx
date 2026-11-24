@@ -4,16 +4,15 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 
 import {
-  Activity,
   Camera,
   GraduationCap,
   LayoutDashboard,
   Radio,
-  Settings,
   Users,
   UserPlus,
   History,
 } from "lucide-react";
+import ThemeToggle from "./ThemeToggle";
 
 const navigation = [
   {
@@ -111,7 +110,12 @@ export default function Sidebar() {
         </nav>
       </div>
 
-      <div className="mt-auto p-4">
+      <div className="mt-auto p-4 space-y-2">
+        <div className="flex items-center justify-between rounded-xl border border-white/[0.07] bg-white/[0.02] px-3 py-2">
+          <span className="text-xs text-[#8b93a7]">Theme Mode</span>
+          <ThemeToggle showLabel={true} />
+        </div>
+
         <div className="rounded-2xl border border-white/[0.07] bg-white/[0.025] p-4">
           <div className="mb-2 flex items-center gap-2">
             <Radio
