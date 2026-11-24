@@ -444,6 +444,8 @@ export default function LivePage() {
 
   const handleSwitchChannel = async (channelNum: number) => {
     try {
+      stopBrowserCamera();
+      setMode("backend");
       setBackendLoading(true);
       setBackendError("");
       setActiveChannel(channelNum);
@@ -452,7 +454,8 @@ export default function LivePage() {
         name: `Camera ${channelNum}`,
         location: `Channel ${channelNum}`,
       };
-      const resolvedUrl = getStreamUrlForChannel(rtspUri, channelNum);
+      const foundDiscovered = discoveredList.find((c) => c.channel === channelNum);
+      const resolvedUrl = foundDiscovered?.source || getStreamUrlForChannel(rtspUri, channelNum);
 
       await startCamera({
         source: resolvedUrl,
@@ -464,6 +467,36 @@ export default function LivePage() {
       await refreshBackend();
     } catch (err) {
       setBackendError(err instanceof Error ? err.message : "Failed to switch camera.");
+    } finally {
+      setBackendLoading(false);
+    }
+  };
+
+  const handleSelectAndSwitchCamera = async (cam: DiscoveredCamera) => {
+    const cleanUri = tempRtspUri.trim() || rtspUri;
+    setRtspUri(cleanUri);
+    try {
+      localStorage.setItem("smart_campus_rtsp_uri", cleanUri);
+    } catch {}
+
+    stopBrowserCamera();
+    setMode("backend");
+    setBackendLoading(true);
+    setActiveChannel(cam.channel);
+
+    try {
+      const resolvedUrl = cam.source || getStreamUrlForChannel(cleanUri, cam.channel);
+      await startCamera({
+        source: resolvedUrl,
+        camera_id: `CAM-${String(cam.channel).padStart(2, "0")}`,
+        camera_name: cam.name,
+      });
+
+      setStreamKey(Date.now());
+      setShowSettingsModal(false);
+      await refreshBackend();
+    } catch (err) {
+      setScanMessage(err instanceof Error ? err.message : "Failed to switch to selected camera.");
     } finally {
       setBackendLoading(false);
     }
@@ -504,8 +537,58 @@ export default function LivePage() {
     try {
       localStorage.setItem("smart_campus_rtsp_uri", cleanUri);
     } catch {}
-    setShowSettingsModal(false);
-    await handleScanCameras(cleanUri);
+
+    stopBrowserCamera();
+    setMode("backend");
+    setBackendLoading(true);
+
+    try {
+      let cams = discoveredList;
+      if (cams.length === 0) {
+        setIsScanning(true);
+        const res = await scanCameras(cleanUri, 16, false);
+        if (res.success && res.cameras.length > 0) {
+          cams = res.cameras;
+          setDiscoveredList(res.cameras);
+          const newChannels: CameraChannel[] = res.cameras.map((c) => ({
+            channel: c.channel,
+            name: c.name || `CCTV Camera ${c.channel}`,
+            location: c.location || (c.resolution ? `Online (${c.resolution})` : "Active Stream"),
+          }));
+          setChannels(newChannels);
+          try {
+            localStorage.setItem("smart_campus_detected_channels", JSON.stringify(newChannels));
+          } catch {}
+        } else {
+          setScanMessage(res.message || "No active cameras detected. Please verify NVR IP or select a demo channel.");
+          setIsScanning(false);
+          setBackendLoading(false);
+          return;
+        }
+        setIsScanning(false);
+      }
+
+      const targetCam = cams.find((c) => c.channel === activeChannel) || cams[0];
+      const targetNum = targetCam ? targetCam.channel : 1;
+      setActiveChannel(targetNum);
+      const targetUrl = targetCam?.source || getStreamUrlForChannel(cleanUri, targetNum);
+      const targetName = targetCam?.name || `CAM ${targetNum}`;
+
+      await startCamera({
+        source: targetUrl,
+        camera_id: `CAM-${String(targetNum).padStart(2, "0")}`,
+        camera_name: targetName,
+      });
+
+      setStreamKey(Date.now());
+      setShowSettingsModal(false);
+      await refreshBackend();
+    } catch (err) {
+      setScanMessage(err instanceof Error ? err.message : "Failed to connect to camera stream.");
+    } finally {
+      setIsScanning(false);
+      setBackendLoading(false);
+    }
   };
 
   return (
@@ -1230,7 +1313,7 @@ export default function LivePage() {
                 </div>
               )}
 
-              {/* Discovered Cameras Preview */}
+              {/* Discovered Cameras Preview - Clickable to Switch */}
               {discoveredList.length > 0 && (
                 <div className="rounded-xl border border-white/[0.08] bg-[#121724] p-3">
                   <div className="mb-2 flex items-center justify-between text-xs font-semibold text-white">
@@ -1238,25 +1321,65 @@ export default function LivePage() {
                       <Camera size={14} className="text-[#6d5dfc]" />
                       <span>Detected Active CCTV Cameras ({discoveredList.length})</span>
                     </div>
-                    <span className="text-[10px] text-[#22c55e] font-mono">ALL READY</span>
+                    <span className="text-[11px] text-[#a594fd]">
+                      Click any camera to switch &amp; view
+                    </span>
                   </div>
-                  <div className="max-h-36 overflow-y-auto space-y-1.5 pr-1">
-                    {discoveredList.map((cam) => (
-                      <div
-                        key={cam.channel}
-                        className="flex items-center justify-between rounded-lg bg-white/[0.03] px-3 py-1.5 text-xs text-white"
-                      >
-                        <div className="flex items-center gap-2">
-                          <span className="font-mono text-[11px] font-bold text-[#6d5dfc]">
-                            CAM {String(cam.channel).padStart(2, "0")}
-                          </span>
-                          <span>{cam.name}</span>
-                        </div>
-                        <span className="text-[10px] text-[#8b93a7]">
-                          {cam.resolution || "Active Stream"}
-                        </span>
-                      </div>
-                    ))}
+                  <div className="max-h-48 overflow-y-auto space-y-1.5 pr-1">
+                    {discoveredList.map((cam) => {
+                      const isCurrent = activeChannel === cam.channel;
+                      return (
+                        <button
+                          key={cam.channel}
+                          type="button"
+                          onClick={() => handleSelectAndSwitchCamera(cam)}
+                          disabled={backendLoading}
+                          className={`w-full flex items-center justify-between rounded-xl border p-2.5 text-left text-xs transition cursor-pointer ${
+                            isCurrent
+                              ? "border-[#6d5dfc] bg-[#6d5dfc]/20 text-white shadow-sm shadow-[#6d5dfc]/30 font-semibold"
+                              : "border-white/[0.08] bg-white/[0.03] text-[#8b93a7] hover:border-[#6d5dfc]/50 hover:bg-white/[0.06] hover:text-white"
+                          }`}
+                        >
+                          <div className="flex items-center gap-2.5">
+                            <span
+                              className={`h-2.5 w-2.5 rounded-full shrink-0 ${
+                                isCurrent && backendStatus?.running
+                                  ? "bg-[#22c55e] animate-pulse"
+                                  : isCurrent
+                                  ? "bg-[#f59e0b]"
+                                  : "bg-[#4a5568]"
+                              }`}
+                            />
+                            <div>
+                              <div className="flex items-center gap-2">
+                                <span className="font-mono text-[11px] font-bold text-[#6d5dfc]">
+                                  CAM {String(cam.channel).padStart(2, "0")}
+                                </span>
+                                <span className="font-semibold text-white">{cam.name}</span>
+                              </div>
+                              <div className="text-[10px] text-[#71717a] font-mono truncate max-w-xs">
+                                {cam.source}
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-2 shrink-0">
+                            <span className="rounded bg-white/[0.05] px-2 py-0.5 text-[10px] text-[#a594fd]">
+                              {cam.resolution || "Active"}
+                            </span>
+                            <span
+                              className={`rounded-lg px-2.5 py-1 text-[10px] font-bold transition ${
+                                isCurrent
+                                  ? "bg-[#6d5dfc] text-white"
+                                  : "bg-[#6d5dfc]/20 text-[#a594fd] hover:bg-[#6d5dfc] hover:text-white"
+                              }`}
+                            >
+                              {isCurrent ? "Active" : "Switch Feed"}
+                            </span>
+                          </div>
+                        </button>
+                      );
+                    })}
                   </div>
                 </div>
               )}
@@ -1343,10 +1466,17 @@ export default function LivePage() {
                   <button
                     type="submit"
                     disabled={backendLoading || isScanning}
-                    className="flex items-center gap-1.5 rounded-xl bg-[#6d5dfc] px-4 py-2 text-xs font-semibold text-white shadow-lg shadow-[#6d5dfc]/30 hover:bg-[#7b6bff]"
+                    className="flex items-center gap-1.5 rounded-xl bg-[#6d5dfc] px-4 py-2 text-xs font-semibold text-white shadow-lg shadow-[#6d5dfc]/30 hover:bg-[#7b6bff] transition disabled:opacity-50"
                   >
+                    {(backendLoading || isScanning) && (
+                      <RefreshCw size={13} className="animate-spin" />
+                    )}
                     <span>
-                      {discoveredList.length > 0
+                      {backendLoading
+                        ? "Connecting Feed..."
+                        : isScanning
+                        ? "Scanning..."
+                        : discoveredList.length > 0
                         ? `Save & Apply (${discoveredList.length} Cameras)`
                         : "Detect & Apply"}
                     </span>

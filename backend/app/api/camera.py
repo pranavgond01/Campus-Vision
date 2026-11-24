@@ -133,22 +133,31 @@ def get_camera(source: str = "0") -> Optional[cv2.VideoCapture]:
         # Check if source is a numeric webcam index (e.g. 0, 1)
         if source_str.isdigit() or (source_str.startswith("-") and source_str[1:].isdigit()):
             src_idx = int(source_str)
-            try:
-                cap = cv2.VideoCapture(src_idx, cv2.CAP_DSHOW)
-                if not cap.isOpened():
-                    cap = cv2.VideoCapture(src_idx)
-                if cap.isOpened():
+            cap = None
+            # On Windows, try MSMF first (non-blocking, modern Media Foundation), then DSHOW, then ANY
+            for backend_api in [cv2.CAP_MSMF, cv2.CAP_DSHOW, cv2.CAP_ANY]:
+                try:
+                    c = cv2.VideoCapture(src_idx, backend_api)
+                    if c.isOpened():
+                        ret, test_frame = c.read()
+                        if ret and test_frame is not None:
+                            cap = c
+                            break
+                        c.release()
+                except Exception:
+                    pass
+            if cap is not None and cap.isOpened():
+                try:
                     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
                     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
                     cap.set(cv2.CAP_PROP_FPS, 30)
-                    ret, test_frame = cap.read()
-                    if ret and test_frame is not None:
-                        _camera = cap
-                        _current_source = source_str
-                        return _camera
-                    cap.release()
-            except Exception as exc:
-                print(f"[CAMERA] Webcam open error: {exc}")
+                except Exception:
+                    pass
+                _camera = cap
+                _current_source = source_str
+                return _camera
+            else:
+                print(f"[CAMERA] Webcam index {src_idx} could not be opened (may be in use by another app or disconnected).")
         else:
             # RTSP, HTTP, or video file stream URI
             try:
@@ -972,27 +981,38 @@ def scan_cctv_channels(req: CameraScanRequest):
     if source_str.isdigit():
         detected_webcams = []
         for idx in range(4):
-            try:
-                cap = cv2.VideoCapture(idx, cv2.CAP_DSHOW)
-                if not cap.isOpened():
-                    cap = cv2.VideoCapture(idx)
-                if cap.isOpened():
-                    ret, frame = cap.read()
-                    if ret and frame is not None:
-                        w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 1280)
-                        h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 720)
-                        detected_webcams.append({
-                            "channel": idx + 1,
-                            "name": f"USB Webcam {idx}" if idx > 0 else "Default Laptop / PC Webcam (0)",
-                            "source": str(idx),
-                            "status": "online",
-                            "resolution": f"{w}x{h}",
-                            "location": "Local Host",
-                            "type": "webcam",
-                        })
-                    cap.release()
-            except Exception:
-                pass
+            cap = None
+            for backend_api in [cv2.CAP_MSMF, cv2.CAP_DSHOW, cv2.CAP_ANY]:
+                try:
+                    c = cv2.VideoCapture(idx, backend_api)
+                    if c.isOpened():
+                        ret, frame = c.read()
+                        if ret and frame is not None:
+                            cap = c
+                            break
+                        c.release()
+                except Exception:
+                    pass
+            if cap is not None and cap.isOpened():
+                try:
+                    w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 1280)
+                    h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 720)
+                    detected_webcams.append({
+                        "channel": idx + 1,
+                        "name": f"USB Webcam {idx}" if idx > 0 else "Default Laptop / PC Webcam (0)",
+                        "source": str(idx),
+                        "status": "online",
+                        "resolution": f"{w}x{h}",
+                        "location": "Local Host",
+                        "type": "webcam",
+                    })
+                except Exception:
+                    pass
+                finally:
+                    try:
+                        cap.release()
+                    except Exception:
+                        pass
         return {
             "success": len(detected_webcams) > 0,
             "detected_count": len(detected_webcams),
