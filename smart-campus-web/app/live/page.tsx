@@ -481,7 +481,9 @@ export default function LivePage() {
 
     stopBrowserCamera();
     setMode("backend");
+    setShowSettingsModal(false);
     setBackendLoading(true);
+    setBackendError("");
     setActiveChannel(cam.channel);
 
     try {
@@ -493,10 +495,9 @@ export default function LivePage() {
       });
 
       setStreamKey(Date.now());
-      setShowSettingsModal(false);
       await refreshBackend();
     } catch (err) {
-      setScanMessage(err instanceof Error ? err.message : "Failed to switch to selected camera.");
+      setBackendError(err instanceof Error ? err.message : "Failed to switch to selected camera.");
     } finally {
       setBackendLoading(false);
     }
@@ -540,12 +541,13 @@ export default function LivePage() {
 
     stopBrowserCamera();
     setMode("backend");
+    setShowSettingsModal(false);
     setBackendLoading(true);
+    setBackendError("");
 
     try {
       let cams = discoveredList;
       if (cams.length === 0) {
-        setIsScanning(true);
         const res = await scanCameras(cleanUri, 16, false);
         if (res.success && res.cameras.length > 0) {
           cams = res.cameras;
@@ -559,13 +561,7 @@ export default function LivePage() {
           try {
             localStorage.setItem("smart_campus_detected_channels", JSON.stringify(newChannels));
           } catch {}
-        } else {
-          setScanMessage(res.message || "No active cameras detected. Please verify NVR IP or select a demo channel.");
-          setIsScanning(false);
-          setBackendLoading(false);
-          return;
         }
-        setIsScanning(false);
       }
 
       const targetCam = cams.find((c) => c.channel === activeChannel) || cams[0];
@@ -581,10 +577,9 @@ export default function LivePage() {
       });
 
       setStreamKey(Date.now());
-      setShowSettingsModal(false);
       await refreshBackend();
     } catch (err) {
-      setScanMessage(err instanceof Error ? err.message : "Failed to connect to camera stream.");
+      setBackendError(err instanceof Error ? err.message : "Failed to connect to camera stream.");
     } finally {
       setIsScanning(false);
       setBackendLoading(false);
@@ -909,7 +904,17 @@ export default function LivePage() {
               </>
             ) : (
               <>
-                {backendStatus?.running ? (
+                {backendLoading ? (
+                  <div className="absolute inset-0 flex flex-col items-center justify-center p-6 text-center">
+                    <RefreshCw size={40} className="mb-3 text-[#6d5dfc] animate-spin" />
+                    <div className="text-sm font-semibold text-white">
+                      Connecting to CAM {String(activeChannel).padStart(2, "0")} ({activeChannelObj.name})...
+                    </div>
+                    <div className="mt-1 text-xs text-[#8b93a7]">
+                      Initializing camera stream &amp; AI recognition models...
+                    </div>
+                  </div>
+                ) : backendStatus?.running ? (
                   <img
                     key={streamKey}
                     src={`${API_URL}/api/camera/stream?t=${streamKey}`}

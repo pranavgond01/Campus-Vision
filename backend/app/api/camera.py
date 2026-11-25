@@ -134,8 +134,8 @@ def get_camera(source: str = "0") -> Optional[cv2.VideoCapture]:
         if source_str.isdigit() or (source_str.startswith("-") and source_str[1:].isdigit()):
             src_idx = int(source_str)
             cap = None
-            # On Windows, try MSMF first (non-blocking, modern Media Foundation), then DSHOW, then ANY
-            for backend_api in [cv2.CAP_MSMF, cv2.CAP_DSHOW, cv2.CAP_ANY]:
+            # On Windows, DirectShow (CAP_DSHOW) opens immediately without MSMF timeout delays
+            for backend_api in [cv2.CAP_DSHOW, cv2.CAP_ANY]:
                 try:
                     c = cv2.VideoCapture(src_idx, backend_api)
                     if c.isOpened():
@@ -148,9 +148,7 @@ def get_camera(source: str = "0") -> Optional[cv2.VideoCapture]:
                     pass
             if cap is not None and cap.isOpened():
                 try:
-                    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-                    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
-                    cap.set(cv2.CAP_PROP_FPS, 30)
+                    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
                 except Exception:
                     pass
                 _camera = cap
@@ -980,9 +978,10 @@ def scan_cctv_channels(req: CameraScanRequest):
     # If numeric webcam index
     if source_str.isdigit():
         detected_webcams = []
-        for idx in range(4):
+        # Probe index 0 and 1 (standard laptop internal + USB webcam) with fast DSHOW
+        for idx in range(2):
             cap = None
-            for backend_api in [cv2.CAP_MSMF, cv2.CAP_DSHOW, cv2.CAP_ANY]:
+            for backend_api in [cv2.CAP_DSHOW, cv2.CAP_ANY]:
                 try:
                     c = cv2.VideoCapture(idx, backend_api)
                     if c.isOpened():
